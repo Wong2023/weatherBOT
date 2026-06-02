@@ -450,104 +450,122 @@ function computeMarketExpectation(outcomes) {
   return weighted / totalProb;
 }
 
-function isLikelyLondonTempMarket(market) {
-  if (!market || !market.name) return false;
-  const normalized = market.name.toLowerCase();
-  if (!normalized.includes('london')) return false;
-  return /temp|temperature|max|°c/.test(normalized);
+// Build the Polymarket event slug from a date string (YYYY-MM-DD).
+// Pattern: highest-temperature-in-london-on-{month}-{day}-{year}
+// e.g. 2026-06-03 → "highest-temperature-in-london-on-june-3-2026"
+function buildLondonSlug(dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const d = new Date(Date.UTC(year, month - 1, day));
+  const monthName = d.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' }).toLowerCase();
+  return `highest-temperature-in-london-on-${monthName}-${day}-${year}`;
 }
 
-function parseMarketTimestamp(market) {
-  return Date.parse(market.updatedAt || market.createdAt || market.timestamp || market.openedAt || market.created_at || market.updated_at || 0) || 0;
+// Fetch a Polymarket event by slug and return its first market's outcomes + id.
+async function fetchEventBySlug(slug) {
+  return fetchWithRetry(async () => {
+    const url = `https://gamma-api.polymarket.com/events?slug=${encodeURIComponent(slug)}`;
+    const r = await fetch(url, { headers: { 'User-Agent': 'Jarvis-weather/1.0' } });
+    if (!r.ok) throw new Error(`gamma-api /events?slug= responded ${r.status}`);
+    const data = await r.json();
+    // The endpoint returns an array of events
+    const events = Array.isArray(data) ? data : [];
+    const event = events.find(e => e.slug === slug);
+    if (!event) throw new Error(`Event slug "${slug}" not found in response (got ${events.length} events)`);
+    return event;
+  }, { label: `Polymarket slug ${slug}`, retries: 2 });
 }
 
-function normalizeMarketList(payload) {
-  if (!payload) return [];
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload.markets)) return payload.markets;
-  if (Array.isArray(payload.data?.markets)) return payload.data.markets;
-  if (Array.isArray(payload.data?.markets?.nodes)) return payload.data.markets.nodes;
-  return [];
-}
-
-async function fetchCandidateMarkets() {
-  const params = new URLSearchParams({
-    status: 'open',
-    search: POLYMARKET_SEARCH_KEYWORD,
-    limit: '20'
-  });
-  const url = `${POLYMARKET_BASE_URL}/markets?${params}`;
-  try {
-    const response = await fetch(url);
-    if (!response.ok) {
-      console.warn(`Polymarket candidate list responded ${response.status}`);
-      return [];
-    }
-    const payload = await response.json();
-    return normalizeMarketList(payload);
-  } catch (error) {
-    console.warn(`Unable to fetch candidate markets: ${error.message}`);
-    return [];
-  }
+// Fetch a single Polymarket market by conditionId via CLOB REST API.
+async function fetchMarketByConditionId(conditionId) {
+  return fetchWithRetry(async () => {
+    const url = `https://clob.polymarket.com/markets/${conditionId}`;
+    const r = await fetch(url, { headers: { 'User-Agent': 'Jarvis-weather/1.0' } });
+    if (!r.ok) throw new Error(`CLOB /markets/${conditionId} responded ${r.status}`);
+    return r.json();
+  }, { label: `CLOB market ${conditionId}`, retries: 2 });
 }
 
 async function findLatestLondonMarket() {
-  const markets = await fetchCandidateMarkets();
-  const candidates = markets.filter((market) => market.status === 'open' && isLikelyLondonTempMarket(market));
-  if (!candidates.length) return null;
-  candidates.sort((a, b) => parseMarketTimestamp(b) - parseMarketTimestamp(a));
-  return candidates[0];
+  // Not used — replaced by slug-based lookup. Kept as no-op.
+  return null;
 }
 
-async function resolveMarketId() {
+// Main entry: fetch the Polymarket market for targetDate.
+// Strategy:
+//   1. If POLYMARKET_MARKET_ID is set → use it directly via CLOB API.
+//   2. Otherwise build slug from targetDate and fetch the event → extract first market.
+async function fetchPolymarketMarketForDate(targetDate) {
+  // Path A: explicit market ID in env
   if (POLYMARKET_MARKET_ID) {
-    return POLYMARKET_MARKET_ID;
+    try {
+      const clob = await fetchMarketByConditionId(POLYMARKET_MARKET_ID);
+      return normalizeClobMarket(clob);
+    } catch (err) {
+      console.warn(`CLOB lookup for POLYMARKET_MARKET_ID failed: ${err.message}`);
+      return null;
+    }
   }
-  const latest = await findLatestLondonMarket();
-  if (!latest) {
-    console.warn('Unable to locate a London temperature market automatically.');
+
+  // Path B: build slug from the target date and fetch via gamma-api
+  const slug = buildLondonSlug(targetDate);
+  console.log(`Auto-resolving market via slug: ${slug}`);
+  let event;
+  try {
+    event = await fetchEventBySlug(slug);
+  } catch (err) {
+    console.warn(`Could not fetch event by slug: ${err.message}`);
     return null;
   }
-  console.log(`Auto-selected Polymarket market ${latest.id} — ${latest.name}`);
-  return latest.id;
+
+  // The event has a `markets` array; take the first active one.
+  const markets = Array.isArray(event.markets) ? event.markets : [];
+  const market = markets.find(m => !m.closed && !m.archived) ?? markets[0];
+  if (!market) {
+    console.warn(`Event "${slug}" found but has no markets.`);
+    return null;
+  }
+
+  return normalizeGammaMarket(market, event);
 }
 
-async function fetchPolymarketMarket(marketId) {
-  if (!marketId) {
-    console.warn('Polymarket market ID not available; skipping market fetch.');
-    return null;
-  }
-  const query = `
-    query Market($id: ID!) {
-      market(id: $id) {
-        id
-        name
-        status
-        question
-        outcomes {
-          id
-          name
-          probability
-        }
-      }
-    }
-  `;
-  const payload = { query, variables: { id: marketId } };
-  const response = await fetch(POLYMARKET_GRAPHQL_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  if (!response.ok) {
-    console.warn(`Polymarket API responded with ${response.status}. Skipping.`);
-    return null;
-  }
-  const data = await response.json();
-  if (!data.data || !data.data.market) {
-    console.warn('Polymarket response did not contain market data.');
-    return null;
-  }
-  return data.data.market;
+// Normalise a CLOB API market response into our internal shape.
+function normalizeClobMarket(clob) {
+  if (!clob) return null;
+  const tokens = clob.tokens ?? [];
+  const outcomes = tokens.map(t => ({
+    id: t.token_id,
+    name: t.outcome,
+    probability: t.price != null ? Number(t.price) : null
+  }));
+  return {
+    id: clob.condition_id ?? clob.market_slug,
+    name: clob.question ?? clob.market_slug,
+    status: clob.active ? 'open' : 'closed',
+    outcomes
+  };
+}
+
+// Normalise a gamma-api market (inside an event) into our internal shape.
+function normalizeGammaMarket(market, event) {
+  const rawOutcomes = typeof market.outcomes === 'string'
+    ? JSON.parse(market.outcomes)
+    : (market.outcomes ?? []);
+  const rawPrices = typeof market.outcomePrices === 'string'
+    ? JSON.parse(market.outcomePrices)
+    : (market.outcomePrices ?? []);
+
+  const outcomes = rawOutcomes.map((name, i) => ({
+    id: String(i),
+    name,
+    probability: rawPrices[i] != null ? Number(rawPrices[i]) : null
+  }));
+
+  return {
+    id: market.id ?? market.conditionId,
+    name: event?.title ?? market.question ?? market.slug,
+    status: market.closed ? 'closed' : 'open',
+    outcomes
+  };
 }
 
 async function logPrediction(record) {
@@ -618,14 +636,13 @@ async function runPredictionCycle() {
     }
   };
 
-  const marketId = await resolveMarketId();
-  const polymarketData = await fetchPolymarketMarket(marketId);
+  const polymarketData = await fetchPolymarketMarketForDate(targetDate);
   const marketExpectation = polymarketData ? computeMarketExpectation(polymarketData.outcomes) : null;
 
   const marketLookup = {
-    id: marketId,
-    source: POLYMARKET_MARKET_ID ? 'static' : 'auto',
-    keyword: POLYMARKET_SEARCH_KEYWORD
+    id: polymarketData?.id ?? null,
+    source: POLYMARKET_MARKET_ID ? 'static-env' : 'auto-slug',
+    slug: POLYMARKET_MARKET_ID ? null : buildLondonSlug(targetDate)
   };
 
   const result = {
@@ -685,7 +702,7 @@ async function runPredictionCycle() {
   if (ensembleForecast.consensus) {
     console.log(`Consensus estimate: ${ensembleForecast.consensus.consensusValue.toFixed(2)}°C (${Math.round(ensembleForecast.consensus.agreementRatio * 100)}% of sources agree${ensembleForecast.consensus.achieved ? '' : '; below threshold'})`);
   }
-  console.log(`Polymarket lookup: ${marketLookup.source} (${marketLookup.keyword}) → ${marketLookup.id ?? 'auto-search failed'}`);
+  console.log(`Polymarket lookup: ${marketLookup.source} slug="${marketLookup.slug ?? 'n/a'}" → ${marketLookup.id ?? 'not found'}`);
   if (result.market) {
     console.log(`Polymarket (${result.market.name}) expectation: ${result.market.expectation?.toFixed(2) ?? 'n/a'}°C`);
     console.log(`Decision signal: ${result.decision.signal}`);
