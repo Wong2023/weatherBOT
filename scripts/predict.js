@@ -421,10 +421,10 @@ function parseTemperatureFromOutcome(outcomeName) {
   if (!numbers.length) return null;
   if (numbers.length === 1) {
     const value = numbers[0];
-    if (/over|above|greater/i.test(outcomeName) && !/under|below|less/i.test(outcomeName)) {
+    if (/over|above|greater|higher|more/i.test(outcomeName) && !/under|below|less/i.test(outcomeName)) {
       return value + 0.25;
     }
-    if (/under|below|less/i.test(outcomeName)) {
+    if (/under|below|less|lower/i.test(outcomeName)) {
       return value - 0.25;
     }
     return value;
@@ -525,7 +525,7 @@ async function fetchPolymarketMarketForDate(targetDate) {
     return null;
   }
 
-  return normalizeGammaMarket(market, event);
+  return normalizeGammaEvent(event);
 }
 
 // Normalise a CLOB API market response into our internal shape.
@@ -545,25 +545,28 @@ function normalizeClobMarket(clob) {
   };
 }
 
-// Normalise a gamma-api market (inside an event) into our internal shape.
-function normalizeGammaMarket(market, event) {
-  const rawOutcomes = typeof market.outcomes === 'string'
-    ? JSON.parse(market.outcomes)
-    : (market.outcomes ?? []);
-  const rawPrices = typeof market.outcomePrices === 'string'
-    ? JSON.parse(market.outcomePrices)
-    : (market.outcomePrices ?? []);
+// Normalise a gamma-api EVENT into our internal shape.
+// London temp markets use one Yes/No market per temperature band.
+// We collect all bands and treat each market's Yes-price as P(that temperature).
+function normalizeGammaEvent(event) {
+  const markets = Array.isArray(event.markets) ? event.markets : [];
 
-  const outcomes = rawOutcomes.map((name, i) => ({
-    id: String(i),
-    name,
-    probability: rawPrices[i] != null ? Number(rawPrices[i]) : null
-  }));
+  const outcomes = markets
+    .map(m => {
+      const rawPrices = typeof m.outcomePrices === 'string'
+        ? JSON.parse(m.outcomePrices)
+        : (m.outcomePrices ?? []);
+      // Yes is index 0; groupItemTitle is cleanest: "19°C", "15°C or below", etc.
+      const name = m.groupItemTitle ?? m.question ?? '';
+      const probability = rawPrices[0] != null ? Number(rawPrices[0]) : null;
+      return { id: String(m.id), name, probability };
+    })
+    .filter(o => o.probability !== null);
 
   return {
-    id: market.id ?? market.conditionId,
-    name: event?.title ?? market.question ?? market.slug,
-    status: market.closed ? 'closed' : 'open',
+    id: event.id,
+    name: event.title ?? event.slug,
+    status: event.closed ? 'closed' : 'open',
     outcomes
   };
 }
