@@ -24,6 +24,7 @@ const OBSERVED_LOG_PATH = path.resolve(LOG_DIR, process.env.OBSERVED_LOG_PATH ||
 
 const WEATHER_LATITUDE = 51.5074;
 const WEATHER_LONGITUDE = -0.1278;
+const GAMMA_BASE = 'https://gamma-api.polymarket.com';
 const POLYMARKET_BASE_URL = process.env.POLYMARKET_BASE_URL || 'https://polymarket.com';
 const EVENT_SLUG_PREFIX = 'highest-temperature-in-london-on-';
 const MONTH_FORMATTER = new Intl.DateTimeFormat('en', { month: 'long' });
@@ -68,7 +69,47 @@ function pickTargetDate(provided) {
   return formatDate(now);
 }
 
-// ── Source 1: Open-Meteo Historical (ERA5) ────────────────────────────────────
+// ── Source 1: Polymarket resolved market (exact match with resolution source) ──
+// Fetches the event for the given date and finds the winning temperature band.
+function buildLondonSlug(date) {
+  const [year, month, day] = date.split('-').map(Number);
+  const d = new Date(Date.UTC(year, month - 1, day));
+  const monthName = d.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' }).toLowerCase();
+  return `highest-temperature-in-london-on-${monthName}-${day}-${year}`;
+}
+
+function extractTempFromTitle(title) {
+  if (!title) return null;
+  const m = title.match(/(-?\d+(?:\.\d+)?)/);
+  return m ? Number(m[1]) : null;
+}
+
+async function fetchPolymarketResolved(date) {
+  return fetchWithRetry(async () => {
+    const slug = buildLondonSlug(date);
+    const url = `${GAMMA_BASE}/events?slug=${encodeURIComponent(slug)}`;
+    const r = await fetch(url, { headers: { 'User-Agent': 'Jarvis-weather/1.0' } });
+    if (!r.ok) throw new Error(`gamma-api ${r.status}`);
+    const events = await r.json();
+    const event = (Array.isArray(events) ? events : []).find(e => e.slug === slug);
+    if (!event) throw new Error(`Event "${slug}" not found`);
+    if (!event.closed) throw new Error(`Event "${slug}" is not yet resolved`);
+
+    const markets = event.markets ?? [];
+    const sorted = [...markets].sort((a, b) =>
+      Number(b.lastTradePrice ?? 0) - Number(a.lastTradePrice ?? 0)
+    );
+    const winner = sorted[0];
+    const price = Number(winner?.lastTradePrice ?? 0);
+    if (price < 0.8) throw new Error(`No clear winner yet (top price: ${price})`);
+
+    const temp = extractTempFromTitle(winner.groupItemTitle ?? winner.question);
+    if (temp === null) throw new Error('Could not parse temperature from winner title');
+    return { maxTemp: temp, source: 'polymarket-resolved', note: winner.groupItemTitle };
+  }, { label: `Polymarket resolved ${date}`, retries: 2 });
+}
+
+// ── Source 2: Open-Meteo Historical (ERA5) ────────────────────────────────────
 // Reliable reanalysis data available for dates up to ~5 days ago.
 async function fetchOpenMeteoHistorical(date) {
   return fetchWithRetry(async () => {
@@ -161,22 +202,33 @@ async function main() {
 
   console.log(`Fetching observed max temperature for ${date}…`);
 
-  // Try ERA5 first (most reliable), then Polymarket as fallback.
+  // Priority order:
+  // 1. Polymarket resolved market — EXACT match with what Polymarket pays out on.
+  // 2. Open-Meteo ERA5            — reliable historical reanalysis.
+  // 3. Polymarket HTML scraping   — fragile fallback.
   let result = null;
+
   try {
-    result = await fetchOpenMeteoHistorical(date);
-    console.log(`Open-Meteo ERA5 → ${result.maxTemp}°C`);
+    result = await fetchPolymarketResolved(date);
+    console.log(`✅ Polymarket resolved → ${result.maxTemp}°C (${result.note})`);
   } catch (err) {
-    console.warn(`Open-Meteo Historical unavailable: ${err.message}`);
-    console.log('Falling back to Polymarket page…');
+    console.warn(`Polymarket resolved unavailable: ${err.message}`);
     try {
-      result = await fetchPolymarketObservation(date);
-      console.log(`Polymarket → ${result.maxTemp}°C`);
+      result = await fetchOpenMeteoHistorical(date);
+      console.log(`Open-Meteo ERA5 → ${result.maxTemp}°C`);
     } catch (err2) {
-      console.error(`Both sources failed for ${date}:`);
-      console.error(`  ERA5: already failed above`);
-      console.error(`  Polymarket: ${err2.message}`);
-      process.exit(1);
+      console.warn(`ERA5 unavailable: ${err2.message}`);
+      console.log('Falling back to Polymarket page scraping…');
+      try {
+        result = await fetchPolymarketObservation(date);
+        console.log(`Polymarket HTML → ${result.maxTemp}°C`);
+      } catch (err3) {
+        console.error(`All 3 sources failed for ${date}:`);
+        console.error(`  Polymarket resolved: ${err.message}`);
+        console.error(`  ERA5: ${err2.message}`);
+        console.error(`  Polymarket HTML: ${err3.message}`);
+        process.exit(1);
+      }
     }
   }
 

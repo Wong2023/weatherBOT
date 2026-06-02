@@ -41,8 +41,10 @@ async function sendTelegram(text) {
   }
 }
 
-const WEATHER_LATITUDE = 51.5074;
-const WEATHER_LONGITUDE = -0.1278;
+// London City Airport (EGLC) — the exact station Polymarket/Wunderground uses for resolution.
+// NOT central London (51.5074, -0.1278) which can differ by 1-2°C on hot days.
+const WEATHER_LATITUDE = 51.5048;
+const WEATHER_LONGITUDE = 0.0495;
 const WEATHER_TIMEZONE = 'UTC';
 const WEATHER_TARGET_CITY = 'London';
 

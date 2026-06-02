@@ -8,6 +8,7 @@
     "daily:analyze": "node scripts/run.js --analyze",
     "predict": "node scripts/predict.js",
     "fetch-observed": "node scripts/fetch_observed.js",
+    "fetch-history": "node scripts/fetch_history.js",
     "record-observed": "node scripts/record_observed.js",
     "analyze-accuracy": "node scripts/analyze_accuracy.js"
   },

@@ -16,6 +16,7 @@ const { execFileSync } = require('child_process');
 const path = require('path');
 
 const SCRIPTS = {
+  fetchHistory: path.resolve(__dirname, 'fetch_history.js'),
   fetchObserved: path.resolve(__dirname, 'fetch_observed.js'),
   predict: path.resolve(__dirname, 'predict.js'),
   analyze: path.resolve(__dirname, 'analyze_accuracy.js')
@@ -40,6 +41,9 @@ function run(scriptPath, label) {
   console.log('🤖 weatherBOT daily run starting…');
   console.log(`📅 ${new Date().toISOString()}`);
 
+  // First run: bulk-download missing history from Polymarket series (fast, idempotent).
+  run(SCRIPTS.fetchHistory, 'Sync historical observations from Polymarket series');
+  // Then fetch yesterday specifically (may not be resolved yet → falls back to ERA5).
   run(SCRIPTS.fetchObserved, 'Fetch yesterday\'s observed temperature');
   run(SCRIPTS.predict, 'Run prediction cycle');
   if (withAnalyze) {
