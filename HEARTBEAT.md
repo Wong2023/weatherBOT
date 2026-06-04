@@ -1,25 +1,18 @@
 # HEARTBEAT.md
 
-## Daily task (run once per day, ~18:00 UTC)
+## ⚠️ AUTOMATED — DO NOT RUN MANUALLY
 
-```
-node scripts/run.js
-```
+The scheduler (`scripts/scheduler.js`) is running 24/7 via pm2 and handles everything automatically.
+**Do NOT call any scripts yourself. Do NOT send weather predictions or analysis to Telegram.**
 
-That's it. This single command:
-1. Fetches yesterday's observed temperature (ERA5 historical API → Polymarket fallback)
-2. Runs the prediction cycle for tomorrow
-3. Sends a Telegram signal automatically
+### What runs automatically:
+- **Every hour** — silent forecast logged to `predictions-hourly.ndjson` (no Telegram)
+- **08:00 UTC daily** — fetch observed temps + daily accuracy report + prediction → Telegram
+- **Sunday 09:00 UTC** — weekly timing analysis → Telegram
 
-**Do NOT run the scripts separately unless debugging.**
-
-## Weekly task (run once per week, e.g. Monday morning)
-
-```
-node scripts/run.js --analyze
-```
-
-Runs the full daily sequence plus accuracy analysis across all logged predictions.
+### Your only job:
+If asked to debug or the user explicitly requests it — check `pm2 logs weatherbot`.
+Otherwise: do nothing. The scheduler handles all weather tasks.
 
 ## Troubleshooting checklist
 
@@ -27,10 +20,10 @@ Runs the full daily sequence plus accuracy analysis across all logged prediction
 - `logs/observed-london.ndjson` growing? → observations are being fetched ✅
 - No Telegram message? → check `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`
 - All sources failed? → Open-Meteo may be rate-limiting; wait and retry
-- `SIGNAL: NONE`? → Polymarket market not found; set `POLYMARKET_MARKET_ID` in `.env`
+- `Polymarket: n/a`? → market not yet listed for that date, normal before ~2 days ahead
 
 ## What NOT to do
 
-- Don't manually edit `.ndjson` log files
-- Don't run `predict.js` without first running `fetch_observed.js` (they're sequenced in `run.js`)
-- Don't run multiple times per day (one prediction per day is enough)
+- Do NOT run `node scripts/run.js` or `node scripts/predict.js` — scheduler does this
+- Do NOT send weather summaries or analysis to Telegram on your own initiative
+- Do NOT edit `.ndjson` log files manually
