@@ -3,8 +3,8 @@
  *
  * Runs three recurring jobs:
  *   1. Hourly silent forecasts  — every hour, no Telegram, logs to predictions-hourly.ndjson
- *   2. Daily full run           — 08:00 UTC: fetch observed + daily report + prediction with Telegram
- *   3. Weekly timing report     — Sunday 09:00 UTC: analyze_timing.js sends timing accuracy to Telegram
+ *   2. Daily full run           — 09:00 UTC: fetch observed + daily report + TODAY's prediction (offset=0) with Telegram
+ *   3. Weekly timing report     — Sunday 10:00 UTC: analyze_timing.js sends timing accuracy to Telegram
  *
  * Usage:
  *   node scripts/scheduler.js
@@ -27,12 +27,12 @@ function log(msg) {
   console.log(`[scheduler] ${new Date().toISOString()}  ${msg}`);
 }
 
-function run(label, scriptPath, extraArgs = []) {
+function run(label, scriptPath, extraArgs = [], extraEnv = {}) {
   log(`▶ ${label}`);
   try {
     execFileSync(process.execPath, [scriptPath, ...extraArgs], {
       stdio: 'inherit',
-      env: { ...process.env }
+      env: { ...process.env, ...extraEnv }
     });
     log(`✅ ${label} — done`);
   } catch (err) {
@@ -63,14 +63,14 @@ function tick() {
     run('Hourly silent forecast', SCRIPTS.predictSilent, ['--silent']);
   }
 
-  // 2. Daily full run — 08:00 UTC (only once per calendar day)
-  if (hour === 8 && min >= 0 && lastDailyDate !== today) {
+  // 2. Daily full run — 09:00 UTC, TARGET_DAY_OFFSET=0 (today's forecast, most accurate)
+  if (hour === 9 && min >= 0 && lastDailyDate !== today) {
     lastDailyDate = today;
-    run('Daily full run (fetch + report + predict)', SCRIPTS.dailyRun);
+    run('Daily full run (fetch + report + predict TODAY)', SCRIPTS.dailyRun, [], { TARGET_DAY_OFFSET: '0' });
   }
 
-  // 3. Weekly timing report — Sunday 09:00 UTC (only once per calendar day)
-  if (dow === 0 && hour === 9 && min >= 0 && lastWeeklyDate !== today) {
+  // 3. Weekly timing report — Sunday 10:00 UTC (only once per calendar day)
+  if (dow === 0 && hour === 10 && min >= 0 && lastWeeklyDate !== today) {
     lastWeeklyDate = today;
     run('Weekly timing analysis', SCRIPTS.timingReport, ['--days=7']);
   }
@@ -78,7 +78,7 @@ function tick() {
 
 // ── Startup ───────────────────────────────────────────────────────────────────
 log('weatherBOT scheduler started.');
-log('Jobs: hourly silent forecast | daily 08:00 UTC | weekly timing Sunday 09:00 UTC');
+log('Jobs: hourly silent forecast | daily 09:00 UTC (TODAY offset=0) | weekly timing Sunday 10:00 UTC');
 
 // Fire immediately on startup so we don't wait up to an hour for first run.
 run('Startup: initial hourly forecast', SCRIPTS.predictSilent, ['--silent']);

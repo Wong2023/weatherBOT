@@ -101,7 +101,12 @@ async function main() {
   const hits = results.filter(r => r.hit).length;
   const total = results.length;
   const accuracy = Math.round((hits / total) * 100);
-  const avgErr = (results.reduce((s, r) => s + Math.abs(r.err), 0) / total).toFixed(2);
+  const avgErrAll = (results.reduce((s, r) => s + Math.abs(r.err), 0) / total).toFixed(2);
+
+  // Within 1°C hits (close but not exact)
+  const within1 = results.filter(r => Math.abs(r.err) <= 1).length;
+  const within1pct = Math.round((within1 / total) * 100);
+
   const last14 = results.slice(0, 14);
   const last7 = last14.slice(0, 7);
   const prev7 = last14.slice(7, 14);
@@ -109,11 +114,11 @@ async function main() {
   const hits7 = last7.filter(r => r.hit).length;
   const hitsPrev7 = prev7.filter(r => r.hit).length;
 
-  // Bias: avg signed error (positive = over-predict, negative = under-predict)
+  // Bias: avg signed error over last 14 (positive = we over-predict, negative = under-predict)
   const bias = last14.length
     ? (last14.reduce((s, r) => s + r.err, 0) / last14.length).toFixed(2)
     : '0.00';
-  const biasDir = Number(bias) > 0.2 ? '↑ over' : Number(bias) < -0.2 ? '↓ under' : '≈ neutral';
+  const biasDir = Number(bias) > 0.2 ? '↑ завышаем' : Number(bias) < -0.2 ? '↓ занижаем' : '≈ нейтрально';
 
   // Current streak
   let streak = 0;
@@ -123,30 +128,33 @@ async function main() {
     if (r.hit === streakType) streak++;
     else break;
   }
-  const streakLabel = streakType ? `✅ ${streak} correct` : `❌ ${streak} missed`;
+  const streakLabel = streakType ? `✅ ${streak} верных подряд` : `❌ ${streak} мимо подряд`;
 
   // Trend: last 7 vs prev 7
   const trendArrow = hits7 > hitsPrev7 ? '📈' : hits7 < hitsPrev7 ? '📉' : '➡️';
-  const trendLabel = `${trendArrow} ${hits7}/${last7.length} vs ${hitsPrev7}/${prev7.length} prev`;
+  const trendLabel = `${trendArrow} ${hits7}/${last7.length} vs ${hitsPrev7}/${prev7.length} пред.`;
 
   // Format recent results table (14 days)
   const rows = last14.map(r => {
     const icon = r.hit ? '✅' : '❌';
     const errStr = (r.err >= 0 ? '+' : '') + r.err;
-    return `${icon} ${r.date}  pred:${r.forecastRounded}°  act:${r.actual}°  (${errStr}°)`;
+    return `${icon} ${r.date}  пред:${r.forecastRounded}°  факт:${r.actual}°  (${errStr}°)`;
   }).join('\n');
 
   const msg =
     `📊 <b>Daily Accuracy Report</b>\n\n` +
-    `<b>Last 14 days:</b> ${hits14}/${last14.length} correct\n` +
-    `<b>All time:</b> ${hits}/${total} (${accuracy}%)\n` +
-    `<b>Avg |error|:</b> ${avgErr}°C  |  <b>Bias:</b> ${bias}°C (${biasDir})\n` +
-    `<b>Trend:</b> ${trendLabel}\n` +
-    `<b>Streak:</b> ${streakLabel}\n\n` +
-    `<b>Last 14 predictions vs Polymarket:</b>\n<pre>${rows}</pre>`;
+    `<b>Всего за всё время: ${hits}/${total}</b>\n` +
+    `  Точное попадание: <b>${accuracy}%</b>\n` +
+    `  В пределах ±1°C: <b>${within1pct}%</b> (${within1}/${total})\n` +
+    `  Средняя ошибка: ${avgErrAll}°C\n\n` +
+    `<b>Последние 14 дней: ${hits14}/${last14.length}</b>\n` +
+    `  Тренд: ${trendLabel}\n` +
+    `  Bias: ${bias}°C (${biasDir})\n` +
+    `  Серия: ${streakLabel}\n\n` +
+    `<b>Прогноз vs Polymarket (14 дней):</b>\n<pre>${rows}</pre>`;
 
   await sendTelegram(msg);
-  console.log(`Report sent: ${hits}/${total} accuracy, avg error ${avgErr}°C`);
+  console.log(`Report sent: ${hits}/${total} accuracy (${accuracy}%), within1°C: ${within1pct}%, avg error ${avgErrAll}°C`);
 }
 
 main().catch(err => {
