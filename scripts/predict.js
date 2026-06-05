@@ -85,9 +85,17 @@ const OUTCOME_TEMPERATURE_MAP = (() => {
 const CONSENSUS_THRESHOLD = parseFloat(process.env.CONSENSUS_THRESHOLD ?? '0.75');
 const CONSENSUS_TOLERANCE = parseFloat(process.env.CONSENSUS_TOLERANCE ?? '0.4');
 
+const MANUAL_MODE = process.argv.includes('--manual');
+
 const TARGET_DAY_OFFSET = (() => {
-  const value = parseInt(process.env.TARGET_DAY_OFFSET ?? '1', 10);
-  return Number.isNaN(value) ? 1 : value;
+  const value = parseInt(process.env.TARGET_DAY_OFFSET ?? '', 10);
+  if (!Number.isNaN(value)) return value;
+  // --manual: before 15:00 UTC (18:00 MSK) → today, after → tomorrow
+  if (MANUAL_MODE) {
+    const now = new Date();
+    return now.getUTCHours() < 15 ? 0 : 1;
+  }
+  return 1; // default for scheduler hourly --silent etc.
 })();
 const LOG_DIR = path.resolve(process.cwd(), 'logs');
 const DEFAULT_LOG_PATH = path.join(LOG_DIR, 'predictions.ndjson');
@@ -515,7 +523,7 @@ function normalizeGammaEvent(event) {
 async function logPrediction(record) {
   await ensureLogDir();
   // Silent mode → hourly log; normal mode → main log.
-  const dest = SILENT_MODE ? HOURLY_LOG_PATH : LOG_PATH;
+  const dest = (SILENT_MODE || MANUAL_MODE) ? HOURLY_LOG_PATH : LOG_PATH;
   const line = `${JSON.stringify(record)}\n`;
   await fs.appendFile(dest, line, { encoding: 'utf8' });
 }
@@ -655,7 +663,7 @@ async function runPredictionCycle() {
   } else {
     console.log('Polymarket data unavailable — only weather consensus recorded.');
   }
-  console.log(`Log appended to ${SILENT_MODE ? HOURLY_LOG_PATH : LOG_PATH}`);
+  console.log(`Log appended to ${(SILENT_MODE || MANUAL_MODE) ? HOURLY_LOG_PATH : LOG_PATH}`);
   console.log('=======================================\n');
 
   // Silent mode: skip Telegram, just log.
