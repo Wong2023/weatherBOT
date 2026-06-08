@@ -21,6 +21,7 @@ const SCRIPTS = {
   predictSilent: path.resolve(__dirname, 'predict.js'),
   dailyRun:      path.resolve(__dirname, 'run.js'),
   timingReport:  path.resolve(__dirname, 'analyze_timing.js'),
+  paperBet:      path.resolve(__dirname, 'paper_bet.js'),
 };
 
 function log(msg) {
@@ -49,6 +50,7 @@ const SAME_DAY_CUTOFF_UTC = 14;
 let lastHourlyHour   = -1;  // UTC hour when last hourly run fired
 let lastDailyDate    = '';  // YYYY-MM-DD of last daily run
 let lastWeeklyDate   = '';  // YYYY-MM-DD of last weekly report (Sunday)
+let lastBetDate      = '';  // YYYY-MM-DD of last paper-bet signal
 
 function utcDateStr(d) {
   return d.toISOString().slice(0, 10);
@@ -79,7 +81,14 @@ function tick() {
     run('Daily full run (fetch + report + predict TODAY)', SCRIPTS.dailyRun, [], { TARGET_DAY_OFFSET: '0' });
   }
 
-  // 3. Weekly timing report — Sunday 10:00 UTC (only once per calendar day)
+  // 3. Daily paper-bet signal — 10:05 UTC (≈13:00 MSK): settle + size + Telegram.
+  //    Runs at :05 so the 10:01 hourly today-forecast is already logged (freshest signal).
+  if (hour === 10 && min >= 5 && lastBetDate !== today) {
+    lastBetDate = today;
+    run('Daily paper-bet signal', SCRIPTS.paperBet);
+  }
+
+  // 4. Weekly timing report — Sunday 10:00 UTC (only once per calendar day)
   if (dow === 0 && hour === 10 && min >= 0 && lastWeeklyDate !== today) {
     lastWeeklyDate = today;
     run('Weekly timing analysis', SCRIPTS.timingReport, ['--days=7']);
@@ -88,7 +97,7 @@ function tick() {
 
 // ── Startup ───────────────────────────────────────────────────────────────────
 log('weatherBOT scheduler started.');
-log('Jobs: hourly forecast tomorrow + today(≤17:00 MSK) | daily 09:00 UTC report | weekly timing Sunday 10:00 UTC');
+log('Jobs: hourly forecast tomorrow + today(≤17:00 MSK) | daily 09:00 UTC report | paper-bet 10:05 UTC | weekly timing Sunday 10:00 UTC');
 
 // Fire immediately on startup so we don't wait up to an hour for first run.
 run('Startup: initial hourly forecast (tomorrow)', SCRIPTS.predictSilent, ['--silent'], { TARGET_DAY_OFFSET: '1' });
