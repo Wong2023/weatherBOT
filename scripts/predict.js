@@ -407,6 +407,63 @@ function computeMarketExpectation(outcomes) {
   return weighted / totalProb;
 }
 
+// Probability distribution over integer bands, from the weighted model votes.
+// Each model contributes its normalizedWeight to the band it rounds to.
+// Returns { "16": 0.25, "17": 0.5, ... } normalized to sum ~1.
+function computeBandDistribution(models) {
+  const dist = {};
+  const n = models.length || 1;
+  let total = 0;
+  for (const m of models) {
+    if (typeof m.maxTemp !== 'number' || Number.isNaN(m.maxTemp)) continue;
+    const band = Math.round(m.maxTemp);
+    // Use the model's weight, but fall back to uniform if it's missing OR zero
+    // (0 passes a `?? ` check, so guard explicitly to avoid an all-zero distribution).
+    const w = (typeof m.normalizedWeight === 'number' && m.normalizedWeight > 0) ? m.normalizedWeight : 1 / n;
+    dist[band] = (dist[band] ?? 0) + w;
+    total += w;
+  }
+  if (total > 0) {
+    for (const b of Object.keys(dist)) dist[b] = Number((dist[b] / total).toFixed(3));
+  }
+  return dist;
+}
+
+// Our probability that a given market outcome wins, given the band distribution.
+// Handles open-ended bands: "X or below" sums all bands ≤X, "X or higher" sums all ≥X.
+function ourProbabilityForOutcome(outcomeName, dist) {
+  const t = parseTemperatureFromOutcome(outcomeName);
+  if (t === null || Number.isNaN(t)) return null;
+  const band = Math.round(t);
+  const isBelow = /below|under|less|lower/i.test(outcomeName);
+  const isAbove = /above|higher|greater|over|more/i.test(outcomeName);
+  let p = 0;
+  for (const [b, w] of Object.entries(dist)) {
+    const bb = Number(b);
+    if (isBelow ? bb <= band : isAbove ? bb >= band : bb === band) p += w;
+  }
+  return Number(p.toFixed(3));
+}
+
+// Build the value table: our P vs market price vs edge, per outcome.
+// edge = ourP - marketPrice. Positive edge = market underprices our band → value bet.
+// Bands priced below MIN_TRADABLE_PRICE are Polymarket placeholders for illiquid/
+// untraded outcomes (default ~0.001) — skip them so we don't flag a fake huge edge.
+const MIN_TRADABLE_PRICE = 0.01;
+function computeValueTable(outcomes, dist) {
+  return outcomes
+    .map((o) => {
+      const price = ensureProbability(o.probability);
+      const ourP = ourProbabilityForOutcome(o.name, dist);
+      const tradable = price !== null && price >= MIN_TRADABLE_PRICE;
+      const edge = (tradable && ourP !== null) ? Number((ourP - price).toFixed(3)) : null;
+      return { name: o.name, ourP, price, edge };
+    })
+    .filter((r) => r.edge !== null)
+    .sort((a, b) => b.edge - a.edge);
+}
+
+
 // Build the Polymarket event slug from a date string (YYYY-MM-DD).
 // Pattern: highest-temperature-in-london-on-{month}-{day}-{year}
 // e.g. 2026-06-03 → "highest-temperature-in-london-on-june-3-2026"
@@ -637,6 +694,12 @@ async function runPredictionCycle() {
       return t !== null && Math.round(t) === roundedForecast;
     }) ?? null;
 
+    // Probability distribution over bands + value (edge) vs the market.
+    const distribution = computeBandDistribution(ensembleForecast.models);
+    const valueTable = computeValueTable(polymarketData.outcomes, distribution);
+    // Best value bet = highest positive edge (market underprices our band the most).
+    const bestValue = valueTable.find(v => v.edge > 0) ?? null;
+
     result.decision = {
       forecastRaw: Number(rawForecast.toFixed(2)),
       forecastRounded: roundedForecast,
@@ -646,7 +709,11 @@ async function runPredictionCycle() {
         : null,
       confidence: confidenceScore,
       confidenceLabel: stats?.confidenceLabel ?? null,
-      spread: Number((stats?.spread ?? 0).toFixed(2))
+      spread: Number((stats?.spread ?? 0).toFixed(2)),
+      // Betting intelligence: our P per band, and where the market misprices it.
+      distribution,
+      value: valueTable,
+      bestValue
     };
   } else {
     result.decision = {
@@ -677,6 +744,18 @@ async function runPredictionCycle() {
   } else {
     console.log('Polymarket data unavailable — only weather consensus recorded.');
   }
+  // Value table: our P vs market price vs edge, per band.
+  if (result.decision.value?.length) {
+    console.log('Value (наша P vs рынок):');
+    for (const v of result.decision.value) {
+      const tag = v.edge > 0.05 ? '  ✅ VALUE' : v.edge < -0.05 ? '  ✗' : '';
+      console.log(`  ${v.name.padEnd(16)} ours ${(v.ourP * 100).toFixed(0).padStart(3)}% | mkt ${(v.price * 100).toFixed(0).padStart(3)}% | edge ${v.edge >= 0 ? '+' : ''}${(v.edge * 100).toFixed(0)}%${tag}`);
+    }
+    if (result.decision.bestValue) {
+      const bv = result.decision.bestValue;
+      console.log(`💰 BEST VALUE: "${bv.name}" edge +${(bv.edge * 100).toFixed(0)}% (наша ${(bv.ourP * 100).toFixed(0)}% vs рынок ${(bv.price * 100).toFixed(0)}%)`);
+    }
+  }
   console.log(`Log appended to ${(SILENT_MODE || MANUAL_MODE) ? HOURLY_LOG_PATH : LOG_PATH}`);
   console.log('=======================================\n');
 
@@ -702,6 +781,18 @@ async function runPredictionCycle() {
   tgText += `🤝 <b>Consensus:</b> ${agreePct}% of models agree on <b>${cons?.consensusValue.toFixed(1)}°C</b>\n`;
   tgText += `   → rounded to <b>${d.forecastRounded}°C</b> (confidence: ${d.confidenceLabel})\n\n`;
   tgText += `🎯 <b>BET ON: "${d.betOn ?? 'unknown'}"</b> ${price}`;
+
+  // Value table — our P vs market, highlight mispriced bands.
+  if (d.value?.length) {
+    const valueLines = d.value
+      .filter(v => Math.abs(v.edge) >= 0.03)
+      .map(v => `  ${v.name}: наша ${(v.ourP * 100).toFixed(0)}% / рынок ${(v.price * 100).toFixed(0)}% → ${v.edge >= 0 ? '+' : ''}${(v.edge * 100).toFixed(0)}%${v.edge > 0.05 ? ' ✅' : ''}`)
+      .join('\n');
+    if (valueLines) tgText += `\n\n📈 <b>Value (наша P vs рынок):</b>\n${valueLines}`;
+    if (d.bestValue) {
+      tgText += `\n\n💰 <b>BEST VALUE: "${d.bestValue.name}"</b> — эдж +${(d.bestValue.edge * 100).toFixed(0)}% (мы ${(d.bestValue.ourP * 100).toFixed(0)}% vs рынок ${(d.bestValue.price * 100).toFixed(0)}%)`;
+    }
+  }
 
   await sendTelegram(tgText);
 }
