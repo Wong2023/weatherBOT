@@ -2,416 +2,508 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>weatherBOT | London Temp</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>weatherBOT</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    body { font-family: 'JetBrains Mono', monospace; }
-    ::-webkit-scrollbar { width: 5px; height: 5px; }
-    ::-webkit-scrollbar-track { background: #0f172a; }
-    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
-    .live-dot { animation: livepulse 2s ease-in-out infinite; }
-    @keyframes livepulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-    .edge-pos { color: #4ade80; }
-    .edge-neg { color: #f87171; }
-    .edge-neu { color: #fbbf24; }
-    .hit-badge { background:#166534; color:#86efac; }
-    .miss-badge { background:#7f1d1d; color:#fca5a5; }
-    .close-badge { background:#854d0e; color:#fde68a; }
+    * { -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; overscroll-behavior: none; }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #080d1a;
+      color: #e2e8f0;
+      min-height: 100%;
+    }
+
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; }
+
+    /* Glass card */
+    .card {
+      background: linear-gradient(135deg, #0f172a 0%, #111827 100%);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 16px;
+    }
+    .card-glow-blue { box-shadow: 0 0 30px rgba(59,130,246,0.06); }
+    .card-glow-green { box-shadow: 0 0 30px rgba(16,185,129,0.06); }
+
+    /* Pages */
+    .page { display: none; }
+    .page.active { display: block; }
+
+    /* Nav */
+    .nav-item { transition: color .2s, background .2s; }
+    .nav-item.active { color: #60a5fa; }
+    .nav-item.active .nav-dot { opacity: 1; }
+    .nav-dot { width: 4px; height: 4px; border-radius: 50%; background: #60a5fa; margin: 2px auto 0; opacity: 0; transition: opacity .2s; }
+
+    /* Mobile bottom nav */
+    .mobile-nav {
+      background: linear-gradient(0deg, #080d1a 0%, rgba(8,13,26,0.95) 100%);
+      border-top: 1px solid rgba(255,255,255,0.05);
+      backdrop-filter: blur(20px);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+
+    /* Badges */
+    .badge-exact { background: rgba(16,185,129,0.15); color: #34d399; border: 1px solid rgba(16,185,129,0.25); }
+    .badge-close { background: rgba(245,158,11,0.12); color: #fbbf24; border: 1px solid rgba(245,158,11,0.2); }
+    .badge-miss  { background: rgba(239,68,68,0.12);  color: #f87171; border: 1px solid rgba(239,68,68,0.2); }
+    .badge-pend  { background: rgba(100,116,139,0.12); color: #64748b; border: 1px solid rgba(100,116,139,0.2); }
+    .badge { display: inline-block; font-size: 10px; padding: 2px 7px; border-radius: 6px; font-weight: 600; }
+
+    .badge-conf-high   { background: rgba(16,185,129,0.12); color: #34d399; border: 1px solid rgba(16,185,129,0.2); }
+    .badge-conf-medium { background: rgba(245,158,11,0.12); color: #fbbf24; border: 1px solid rgba(245,158,11,0.2); }
+    .badge-conf-low    { background: rgba(239,68,68,0.1);   color: #f87171; border: 1px solid rgba(239,68,68,0.15); }
+
+    /* Pulse */
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .live { animation: pulse 2s ease-in-out infinite; }
+
+    /* Gradient text */
+    .gradient-temp {
+      background: linear-gradient(135deg, #e2e8f0, #93c5fd);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+
+    /* Bar animation */
+    .bar-fill { transition: width .6s cubic-bezier(.4,0,.2,1); }
+
+    /* Table hover */
+    .trow:hover { background: rgba(255,255,255,0.025); }
+
+    /* Skeleton */
+    @keyframes shimmer { 0%{background-position:-400px 0} 100%{background-position:400px 0} }
+    .skeleton {
+      background: linear-gradient(90deg, #1e293b 0%, #334155 50%, #1e293b 100%);
+      background-size: 800px 100%;
+      animation: shimmer 1.5s infinite;
+      border-radius: 8px;
+    }
+
+    /* Smooth page fade */
+    @keyframes fadein { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+    .page.active { animation: fadein .2s ease; }
+
+    /* Edge colors */
+    .edge-up { color: #34d399; }
+    .edge-dn { color: #f87171; }
+    .edge-nu { color: #fbbf24; }
+
+    /* Details arrow */
+    details summary { list-style: none; }
+    details summary::-webkit-details-marker { display: none; }
+    details[open] .arrow { transform: rotate(90deg); }
+    .arrow { display: inline-block; transition: transform .2s; }
+
+    /* Scrollable table wrapper */
+    .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   </style>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen">
+
+<body class="flex flex-col" style="min-height:100dvh">
 
   <!-- HEADER -->
-  <header class="sticky top-0 z-20 border-b border-slate-700/80 bg-slate-900/95 backdrop-blur-sm">
-    <div class="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
-      <div class="flex items-center gap-3">
-        <span class="text-blue-400 font-bold text-base">weatherBOT</span>
-        <span class="hidden sm:block text-slate-600 text-xs">London Max Temp · Polymarket</span>
-      </div>
-      <div class="flex items-center gap-4 text-xs text-slate-400">
-        <span id="last-update-label">—</span>
-        <span class="flex items-center gap-1.5">
-          <span class="live-dot w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block"></span>
-          <span id="countdown">60s</span>
-        </span>
-        <button onclick="refreshNow()" class="text-slate-500 hover:text-slate-200 transition-colors">↻</button>
-        <a href="/logout" class="text-slate-500 hover:text-slate-200 transition-colors">logout</a>
-      </div>
+  <header class="sticky top-0 z-30 flex items-center justify-between px-4 h-12"
+          style="background:rgba(8,13,26,0.9);backdrop-filter:blur(20px);border-bottom:1px solid rgba(255,255,255,0.04)">
+    <div class="flex items-center gap-2.5">
+      <span class="text-blue-400 font-bold text-sm tracking-wide">weatherBOT</span>
+      <span class="hidden sm:flex items-center gap-1.5 text-slate-600 text-xs">
+        <span class="live w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block"></span>
+        London Max Temp
+      </span>
+    </div>
+    <div class="flex items-center gap-3 text-xs text-slate-500">
+      <span id="hdr-time">—</span>
+      <button onclick="refreshNow()" class="hover:text-slate-300 transition-colors text-base leading-none">↻</button>
+      <span id="hdr-cd" class="tabular-nums w-8 text-right">60s</span>
+      <a href="/logout" class="hover:text-slate-300 transition-colors hidden sm:block">exit</a>
     </div>
   </header>
 
-  <main class="max-w-7xl mx-auto px-4 py-5 space-y-5">
+  <!-- DESKTOP NAV (sm+) -->
+  <nav class="hidden sm:flex items-center gap-1 px-4 pt-3 pb-0">
+    <button onclick="goPage('forecast')" class="nav-item active text-xs px-4 py-2 rounded-lg" id="nav-forecast">Forecast</button>
+    <button onclick="goPage('bank')"     class="nav-item text-xs px-4 py-2 rounded-lg text-slate-500" id="nav-bank">Bank</button>
+    <button onclick="goPage('history')"  class="nav-item text-xs px-4 py-2 rounded-lg text-slate-500" id="nav-history">History</button>
+    <button onclick="goPage('models')"   class="nav-item text-xs px-4 py-2 rounded-lg text-slate-500" id="nav-models">Models</button>
+  </nav>
 
-    <!-- FORECASTS: TODAY + TOMORROW -->
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-      <div id="card-today"  class="bg-slate-800 border border-slate-700 rounded-2xl p-5 min-h-[420px]"><div class="text-slate-600 text-xs animate-pulse">Loading…</div></div>
-      <div id="card-tomorrow" class="bg-slate-800 border border-slate-700 rounded-2xl p-5 min-h-[420px]"><div class="text-slate-600 text-xs animate-pulse">Loading…</div></div>
-    </div>
+  <!-- CONTENT -->
+  <main class="flex-1 overflow-y-auto px-3 sm:px-4 py-4 pb-24 sm:pb-6 max-w-5xl mx-auto w-full">
 
-    <!-- BANK CARDS + STATS -->
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <div id="bank-section" class="lg:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-3"></div>
-      <div id="stats-section" class="grid grid-cols-2 gap-3"></div>
-    </div>
-
-    <!-- P&L CHART -->
-    <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">P&amp;L — Paper Trading (Virtual $100 each)</h2>
-        <div class="flex gap-4 text-xs text-slate-500">
-          <span class="flex items-center gap-1.5"><span class="inline-block w-5 h-0.5 bg-blue-400 rounded"></span>kelly_pure</span>
-          <span class="flex items-center gap-1.5"><span class="inline-block w-5 h-0.5 bg-emerald-400 rounded"></span>kelly_shrunk</span>
-          <span class="flex items-center gap-1.5"><span class="inline-block w-5 h-0.5 bg-orange-400 rounded"></span>market_weighted</span>
-        </div>
+    <!-- ── PAGE: FORECAST ── -->
+    <div id="page-forecast" class="page active space-y-4">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div id="fc-today"    class="card card-glow-blue p-5"><div class="skeleton h-64 w-full"></div></div>
+        <div id="fc-tomorrow" class="card p-5"><div class="skeleton h-64 w-full"></div></div>
       </div>
-      <div style="height:220px"><canvas id="pnl-chart"></canvas></div>
     </div>
 
-    <!-- MODEL COMPARISON TABLE -->
-    <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5">
-      <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-4">Ensemble — 12 Models</h2>
-      <div id="models-table" class="overflow-x-auto"><div class="text-slate-600 text-xs animate-pulse">Loading…</div></div>
+    <!-- ── PAGE: BANK ── -->
+    <div id="page-bank" class="page space-y-4">
+      <div id="bank-cards" class="grid grid-cols-1 sm:grid-cols-3 gap-3"></div>
+      <div class="card p-5">
+        <div class="flex items-center justify-between mb-4">
+          <span class="text-xs text-slate-500 uppercase tracking-widest font-semibold">P&amp;L — Virtual $100 each</span>
+          <div class="flex gap-3 text-xs text-slate-600">
+            <span class="flex items-center gap-1"><span class="w-4 h-0.5 bg-blue-400 rounded inline-block"></span>Pure</span>
+            <span class="flex items-center gap-1"><span class="w-4 h-0.5 bg-emerald-400 rounded inline-block"></span>Shrunk</span>
+            <span class="flex items-center gap-1"><span class="w-4 h-0.5 bg-orange-400 rounded inline-block"></span>Mkt</span>
+          </div>
+        </div>
+        <div style="height:200px"><canvas id="pnl-chart"></canvas></div>
+      </div>
+      <div class="card p-5">
+        <div class="text-xs text-slate-500 uppercase tracking-widest font-semibold mb-4">Recent Bets</div>
+        <div id="bets-table" class="table-wrap"></div>
+      </div>
     </div>
 
-    <!-- HISTORY TABLE -->
-    <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5">
-      <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-4">History — Last 30 days</h2>
-      <div id="history-table" class="overflow-x-auto"><div class="text-slate-600 text-xs animate-pulse">Loading…</div></div>
+    <!-- ── PAGE: HISTORY ── -->
+    <div id="page-history" class="page space-y-4">
+      <div id="stats-cards" class="grid grid-cols-2 sm:grid-cols-4 gap-3"></div>
+      <div class="card p-5">
+        <div class="text-xs text-slate-500 uppercase tracking-widest font-semibold mb-4">Predictions vs Actual — Last 30 days</div>
+        <div id="history-table" class="table-wrap"></div>
+      </div>
+    </div>
+
+    <!-- ── PAGE: MODELS ── -->
+    <div id="page-models" class="page space-y-4">
+      <div id="models-content"></div>
     </div>
 
   </main>
 
-<script>
-// ─── STATE ────────────────────────────────────────────────────────────────────
-let pnlChart = null;
-let countdownVal = 60;
-let countdownInterval = null;
+  <!-- MOBILE BOTTOM NAV -->
+  <nav class="sm:hidden mobile-nav fixed bottom-0 left-0 right-0 z-30 flex">
+    <button onclick="goPage('forecast')" id="mnav-forecast" class="nav-item active flex-1 py-2.5 flex flex-col items-center gap-0.5">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 18 0 9 9 0 0 0-18 0"/><path d="M12 8v4l2 2"/></svg>
+      <span class="text-[10px]">Forecast</span>
+      <span class="nav-dot"></span>
+    </button>
+    <button onclick="goPage('bank')" id="mnav-bank" class="nav-item flex-1 py-2.5 flex flex-col items-center gap-0.5 text-slate-500">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      <span class="text-[10px]">Bank</span>
+      <span class="nav-dot"></span>
+    </button>
+    <button onclick="goPage('history')" id="mnav-history" class="nav-item flex-1 py-2.5 flex flex-col items-center gap-0.5 text-slate-500">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+      <span class="text-[10px]">History</span>
+      <span class="nav-dot"></span>
+    </button>
+    <button onclick="goPage('models')" id="mnav-models" class="nav-item flex-1 py-2.5 flex flex-col items-center gap-0.5 text-slate-500">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3m-3.3-6.7-2.1 2.1M8.4 15.6l-2.1 2.1m0-11.2 2.1 2.1m7.2 7.2 2.1 2.1"/></svg>
+      <span class="text-[10px]">Models</span>
+      <span class="nav-dot"></span>
+    </button>
+  </nav>
 
-// ─── BOOTSTRAP ────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+</body>
+
+<script>
+// ── STATE ──────────────────────────────────────────────────────────────────────
+let DATA = null;
+let pnlChart = null;
+let countdown = 60;
+let cdTimer = null;
+const PAGES = ['forecast', 'bank', 'history', 'models'];
+
+// ── INIT ───────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  const hash = location.hash.replace('#', '');
+  if (PAGES.includes(hash)) goPage(hash, false);
   fetchData();
-  countdownInterval = setInterval(tick, 1000);
+  cdTimer = setInterval(() => {
+    countdown--;
+    document.getElementById('hdr-cd').textContent = countdown + 's';
+    if (countdown <= 0) { countdown = 60; fetchData(); }
+  }, 1000);
 });
 
-function tick() {
-  countdownVal--;
-  document.getElementById('countdown').textContent = countdownVal + 's';
-  if (countdownVal <= 0) { countdownVal = 60; fetchData(); }
+window.addEventListener('hashchange', () => {
+  const p = location.hash.replace('#', '');
+  if (PAGES.includes(p)) goPage(p, false);
+});
+
+// ── NAVIGATION ─────────────────────────────────────────────────────────────────
+function goPage(name, pushHistory = true) {
+  PAGES.forEach(p => {
+    document.getElementById('page-' + p)?.classList.remove('active');
+    document.getElementById('nav-' + p)?.classList.remove('active');
+    document.getElementById('nav-' + p)?.classList.add('text-slate-500');
+    document.getElementById('mnav-' + p)?.classList.remove('active');
+    document.getElementById('mnav-' + p)?.classList.add('text-slate-500');
+  });
+  document.getElementById('page-' + name)?.classList.add('active');
+  const dn = document.getElementById('nav-' + name);
+  if (dn) { dn.classList.add('active'); dn.classList.remove('text-slate-500'); }
+  const mn = document.getElementById('mnav-' + name);
+  if (mn) { mn.classList.add('active'); mn.classList.remove('text-slate-500'); }
+  if (pushHistory) history.replaceState(null, '', '#' + name);
+  if (DATA && name === 'bank') renderPnlChart(DATA.pnlHistory);
 }
 
-function refreshNow() {
-  countdownVal = 60;
-  document.getElementById('countdown').textContent = '60s';
-  fetchData();
-}
-
-// ─── DATA FETCH ───────────────────────────────────────────────────────────────
+// ── FETCH ──────────────────────────────────────────────────────────────────────
 async function fetchData() {
   try {
     const res = await fetch('/api/data');
     if (!res.ok) { if (res.status === 401) location.href = '/login'; return; }
-    const data = await res.json();
-
-    renderForecasts(data.forecasts);
-    renderBank(data.bank, data.pnlHistory);
-    renderStats(data.stats);
-    renderPnlChart(data.pnlHistory);
-    renderModels(data.forecasts);
-    renderHistory(data.history);
-
-    const t = new Date(data.updatedAt);
-    const hhmm = t.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
-    document.getElementById('last-update-label').textContent = 'Updated ' + hhmm + ' UTC';
-  } catch (e) {
-    console.error('fetch error', e);
-  }
+    DATA = await res.json();
+    const t = new Date(DATA.updatedAt);
+    document.getElementById('hdr-time').textContent =
+      t.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC';
+    render();
+  } catch(e) { console.error(e); }
 }
 
-// ─── HELPERS ──────────────────────────────────────────────────────────────────
-function fmt(n, d = 1) { return n != null ? n.toFixed(d) : '—'; }
-function pct(n) { return n != null ? (n * 100).toFixed(0) + '%' : '—'; }
-function edgeClass(e) { return e > 0.05 ? 'edge-pos' : e > 0 ? 'edge-neu' : 'edge-neg'; }
-function confBadge(label) {
-  const map = { high: 'bg-emerald-900 text-emerald-300', medium: 'bg-yellow-900 text-yellow-300', low: 'bg-red-900/60 text-red-300' };
-  return map[label] || 'bg-slate-700 text-slate-400';
-}
-function timeAgo(ts) {
-  const diff = Math.round((Date.now() - new Date(ts)) / 60000);
-  if (diff < 1) return 'just now';
-  if (diff < 60) return diff + 'm ago';
-  return Math.round(diff / 60) + 'h ago';
+function refreshNow() { countdown = 60; document.getElementById('hdr-cd').textContent = '60s'; fetchData(); }
+
+function render() {
+  if (!DATA) return;
+  renderForecast();
+  renderBank();
+  renderStats();
+  renderHistory();
+  renderModels();
+  const cur = location.hash.replace('#', '') || 'forecast';
+  if (cur === 'bank') renderPnlChart(DATA.pnlHistory);
 }
 
-// ─── FORECAST CARD ────────────────────────────────────────────────────────────
-function renderForecasts(forecasts) {
-  renderForecastCard('card-today',    forecasts[0], 'TODAY');
-  renderForecastCard('card-tomorrow', forecasts[1], 'TOMORROW');
+// ── HELPERS ────────────────────────────────────────────────────────────────────
+function fmt(n, d=1) { return n != null ? n.toFixed(d) : '—'; }
+function pct(n) { return n != null ? (n*100).toFixed(0)+'%' : '—'; }
+function edgeCls(e) { return e > 0.04 ? 'edge-up' : e > 0 ? 'edge-nu' : 'edge-dn'; }
+function ago(ts) {
+  const m = Math.round((Date.now() - new Date(ts)) / 60000);
+  if (m < 1) return 'just now'; if (m < 60) return m+'m ago'; return Math.round(m/60)+'h ago';
+}
+function confCls(l) {
+  return { high:'badge-conf-high', medium:'badge-conf-medium', low:'badge-conf-low' }[l] || 'badge-conf-low';
 }
 
-function renderForecastCard(elId, fc, label) {
+// ── FORECAST PAGE ──────────────────────────────────────────────────────────────
+function renderForecast() {
+  renderFcCard('fc-today',    DATA.forecasts[0], 'TODAY');
+  renderFcCard('fc-tomorrow', DATA.forecasts[1], 'TOMORROW');
+}
+
+function renderFcCard(elId, fc, label) {
   const el = document.getElementById(elId);
   if (!fc) {
-    el.innerHTML = `<div class="text-slate-600 text-xs">No ${label.toLowerCase()} forecast yet</div>`;
+    el.innerHTML = `<div class="text-slate-600 text-xs py-8 text-center">No ${label.toLowerCase()} forecast yet</div>`;
     return;
   }
-
   const d = fc.decision;
   const s = fc.ensembleForecast.stats;
-  const con = fc.ensembleForecast.consensus;
-  const edge = d.bestValue ? d.bestValue.edge : 0;
-  const edgeCls = edgeClass(edge);
-  const edgeSign = edge >= 0 ? '+' : '';
-
-  // Market outcomes bars
-  const outcomes = (fc.market && fc.market.outcomes) || [];
+  const bv = d.bestValue;
+  const edge = bv ? bv.edge : 0;
+  const eSign = edge >= 0 ? '+' : '';
+  const outcomes = fc.market?.outcomes || [];
   const maxP = Math.max(...outcomes.map(o => o.price), 0.001);
-  const outcomesHTML = outcomes.map(o => {
+
+  const outRows = outcomes.map(o => {
     const isBet = o.name === d.betOn;
-    const barW = Math.round(o.price / maxP * 100);
-    const nameClass = isBet ? 'text-blue-300 font-semibold' : 'text-slate-500';
-    const barColor = isBet ? 'bg-blue-400' : 'bg-slate-600';
-    const rowBg = isBet ? 'bg-blue-900/30 rounded-md' : '';
-    return `<tr class="${rowBg}">
-      <td class="py-0.5 px-1 text-xs ${nameClass} whitespace-nowrap w-32">${o.name}${isBet ? ' ★' : ''}</td>
-      <td class="py-0.5 px-1 w-28">
-        <div class="h-1.5 bg-slate-700 rounded-full"><div class="${barColor} h-full rounded-full" style="width:${barW}%"></div></div>
-      </td>
-      <td class="py-0.5 px-1 text-xs text-right ${isBet ? 'text-blue-300' : 'text-slate-600'}">${(o.price*100).toFixed(1)}%</td>
-    </tr>`;
+    const w = Math.round(o.price / maxP * 100);
+    return `<div class="flex items-center gap-2 py-1 ${isBet ? 'opacity-100' : 'opacity-50'}">
+      <span class="text-xs w-28 shrink-0 ${isBet ? 'text-blue-300 font-semibold' : 'text-slate-400'}">${o.name}${isBet ? ' ★' : ''}</span>
+      <div class="flex-1 h-1.5 rounded-full bg-slate-800">
+        <div class="h-full rounded-full bar-fill ${isBet ? 'bg-blue-400' : 'bg-slate-600'}" style="width:${w}%"></div>
+      </div>
+      <span class="text-xs w-10 text-right ${isBet ? 'text-blue-300' : 'text-slate-600'}">${(o.price*100).toFixed(1)}%</span>
+    </div>`;
   }).join('');
 
-  // Value table (all outcomes with edge)
-  const valRows = (d.value || []).slice(0, 5).map(v => {
-    const eCls = edgeClass(v.edge);
-    const eSign = v.edge >= 0 ? '+' : '';
-    return `<tr>
-      <td class="py-0.5 pr-3 text-xs text-slate-400 whitespace-nowrap">${v.name}</td>
-      <td class="py-0.5 pr-3 text-xs text-blue-300">${(v.ourP*100).toFixed(0)}%</td>
-      <td class="py-0.5 pr-3 text-xs text-slate-500">${(v.price*100).toFixed(1)}%</td>
-      <td class="py-0.5 text-xs font-semibold ${eCls}">${eSign}${(v.edge*100).toFixed(1)}%</td>
+  const valRows = (d.value||[]).filter(v=>Math.abs(v.price-0.01)>0.005).slice(0,6).map(v => {
+    const sign = v.edge >= 0 ? '+' : '';
+    return `<tr class="trow">
+      <td class="py-1.5 pr-3 text-xs text-slate-400 whitespace-nowrap">${v.name}</td>
+      <td class="py-1.5 pr-3 text-xs text-blue-300 text-right">${(v.ourP*100).toFixed(0)}%</td>
+      <td class="py-1.5 pr-3 text-xs text-slate-500 text-right">${(v.price*100).toFixed(1)}%</td>
+      <td class="py-1.5 text-xs font-bold text-right ${edgeCls(v.edge)}">${sign}${(v.edge*100).toFixed(1)}%</td>
     </tr>`;
   }).join('');
-
-  // Model distribution (band → list of models)
-  const models = fc.ensembleForecast.models || [];
-  const byBand = {};
-  for (const m of models) {
-    const b = Math.round(m.maxTemp).toString();
-    if (!byBand[b]) byBand[b] = [];
-    byBand[b].push(m.label);
-  }
-  const dist = d.distribution || {};
-  const distHTML = Object.entries(dist)
-    .sort((a, b) => parseFloat(b[1]) - parseFloat(a[1]))
-    .map(([band, p]) => {
-      const mods = byBand[band] || [];
-      const isBet = band + '°C' === d.betOn || band === d.betOn?.replace('°C','');
-      return `<tr>
-        <td class="py-0.5 pr-2 text-xs ${isBet ? 'text-blue-300' : 'text-slate-500'} whitespace-nowrap">${band}°C</td>
-        <td class="py-0.5 pr-3 text-xs text-slate-300">${Math.round(p*100)}%</td>
-        <td class="py-0.5 text-xs text-slate-600 truncate max-w-xs">${mods.join(', ')}</td>
-      </tr>`;
-    }).join('');
 
   el.innerHTML = `
     <div class="flex items-start justify-between mb-4">
       <div>
-        <div class="text-xs text-slate-500 uppercase tracking-widest font-semibold">${label}</div>
-        <div class="text-slate-200 font-medium mt-0.5">${fc.targetDate}</div>
-        <div class="text-xs text-slate-600 mt-0.5">${timeAgo(fc.timestamp)}</div>
+        <div class="text-xs text-slate-500 uppercase tracking-widest font-semibold mb-0.5">${label}</div>
+        <div class="text-slate-300 text-sm">${fc.targetDate}</div>
+        <div class="text-slate-600 text-xs mt-0.5">${ago(fc.timestamp)}</div>
       </div>
-      <span class="text-xs px-2 py-1 rounded-full ${confBadge(d.confidenceLabel)}">${d.confidenceLabel}</span>
+      <span class="badge ${confCls(d.confidenceLabel)}">${d.confidenceLabel}</span>
     </div>
 
-    <div class="flex items-baseline gap-2 mb-4">
-      <span class="text-6xl font-bold text-white leading-none">${d.betOn ? d.betOn.replace('°C','') : '—'}</span>
-      <span class="text-2xl text-slate-500">°C</span>
-      <span class="text-xs text-slate-600 ml-1 self-end mb-1">bet on</span>
+    <div class="flex items-end gap-3 mb-5">
+      <span class="gradient-temp font-bold leading-none" style="font-size:clamp(48px,12vw,72px)">${d.betOn?.replace('°C','') ?? '—'}</span>
+      <div class="mb-1">
+        <span class="text-slate-400 text-xl">°C</span>
+        <div class="text-xs text-slate-600 mt-0.5">bet on</div>
+      </div>
     </div>
 
-    <div class="grid grid-cols-4 gap-2 mb-5">
-      <div class="bg-slate-900/60 rounded-lg p-2 text-center">
+    <div class="grid grid-cols-3 gap-2 mb-5">
+      <div class="rounded-xl p-3 text-center" style="background:rgba(59,130,246,0.07);border:1px solid rgba(59,130,246,0.12)">
         <div class="text-xs text-slate-500 mb-1">Our P</div>
-        <div class="text-sm font-bold text-blue-300">${d.bestValue ? (d.bestValue.ourP*100).toFixed(0)+'%' : '—'}</div>
+        <div class="text-base font-bold text-blue-400">${bv ? (bv.ourP*100).toFixed(0)+'%' : '—'}</div>
       </div>
-      <div class="bg-slate-900/60 rounded-lg p-2 text-center">
+      <div class="rounded-xl p-3 text-center" style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06)">
         <div class="text-xs text-slate-500 mb-1">Market</div>
-        <div class="text-sm font-bold text-slate-300">${d.marketPrice ? (d.marketPrice*100).toFixed(0)+'%' : '—'}</div>
+        <div class="text-base font-bold text-slate-300">${d.marketPrice ? (d.marketPrice*100).toFixed(0)+'%' : '—'}</div>
       </div>
-      <div class="bg-slate-900/60 rounded-lg p-2 text-center">
+      <div class="rounded-xl p-3 text-center" style="background:${edge>0.04?'rgba(16,185,129,0.07)':edge>0?'rgba(245,158,11,0.07)':'rgba(239,68,68,0.07)'};border:1px solid ${edge>0.04?'rgba(16,185,129,0.15)':edge>0?'rgba(245,158,11,0.15)':'rgba(239,68,68,0.12)'}">
         <div class="text-xs text-slate-500 mb-1">Edge</div>
-        <div class="text-sm font-bold ${edgeCls}">${edgeSign}${(edge*100).toFixed(1)}%</div>
-      </div>
-      <div class="bg-slate-900/60 rounded-lg p-2 text-center">
-        <div class="text-xs text-slate-500 mb-1">Spread</div>
-        <div class="text-sm font-bold text-slate-300">${fmt(s.spread)}°</div>
+        <div class="text-base font-bold ${edgeCls(edge)}">${eSign}${(edge*100).toFixed(1)}%</div>
       </div>
     </div>
 
-    <div class="text-xs text-slate-500 mb-2 uppercase tracking-wider">Market Odds</div>
-    <table class="w-full mb-4">${outcomesHTML}</table>
+    <div class="text-xs text-slate-600 uppercase tracking-wider mb-2 font-semibold">Market odds</div>
+    <div class="mb-4">${outRows}</div>
 
-    <details class="group">
-      <summary class="text-xs text-slate-500 uppercase tracking-wider cursor-pointer hover:text-slate-300 transition-colors mb-2 list-none flex items-center gap-1">
-        <span class="group-open:rotate-90 transition-transform inline-block">▶</span> Value Table
+    <details>
+      <summary class="flex items-center gap-2 text-xs text-slate-500 hover:text-slate-300 cursor-pointer transition-colors mb-2 select-none">
+        <span class="arrow">▶</span> Value table
       </summary>
-      <table class="w-full mb-4">
+      <table class="w-full mb-1">
         <thead><tr>
-          <th class="text-left text-xs text-slate-600 font-normal pb-1">Band</th>
-          <th class="text-left text-xs text-slate-600 font-normal pb-1">Our P</th>
-          <th class="text-left text-xs text-slate-600 font-normal pb-1">Market</th>
-          <th class="text-left text-xs text-slate-600 font-normal pb-1">Edge</th>
+          <th class="text-left text-xs text-slate-600 font-normal pb-1.5">Band</th>
+          <th class="text-right text-xs text-slate-600 font-normal pb-1.5">Our P</th>
+          <th class="text-right text-xs text-slate-600 font-normal pb-1.5">Market</th>
+          <th class="text-right text-xs text-slate-600 font-normal pb-1.5">Edge</th>
         </tr></thead>
         <tbody>${valRows}</tbody>
       </table>
     </details>
 
-    <details class="group">
-      <summary class="text-xs text-slate-500 uppercase tracking-wider cursor-pointer hover:text-slate-300 transition-colors mb-2 list-none flex items-center gap-1">
-        <span class="group-open:rotate-90 transition-transform inline-block">▶</span> Model Votes
-      </summary>
-      <table class="w-full">
-        <thead><tr>
-          <th class="text-left text-xs text-slate-600 font-normal pb-1">Band</th>
-          <th class="text-left text-xs text-slate-600 font-normal pb-1">Votes</th>
-          <th class="text-left text-xs text-slate-600 font-normal pb-1">Models</th>
-        </tr></thead>
-        <tbody>${distHTML}</tbody>
-      </table>
-    </details>
+    <div class="mt-3 pt-3 border-t border-slate-800 grid grid-cols-3 gap-3 text-center">
+      <div><div class="text-xs text-slate-600 mb-0.5">Mean</div><div class="text-sm text-slate-300">${fmt(s.mean)}°</div></div>
+      <div><div class="text-xs text-slate-600 mb-0.5">Spread</div><div class="text-sm text-slate-300">${fmt(s.spread)}°</div></div>
+      <div><div class="text-xs text-slate-600 mb-0.5">Models</div><div class="text-sm text-slate-300">${fc.ensembleForecast.models?.length ?? '—'}</div></div>
+    </div>
   `;
 }
 
-// ─── BANK CARDS ───────────────────────────────────────────────────────────────
-function renderBank(bank, pnlHistory) {
-  const el = document.getElementById('bank-section');
-  if (!bank || !bank.strategies) {
-    el.innerHTML = `<div class="col-span-3 bg-slate-800 border border-slate-700 rounded-2xl p-5 text-slate-600 text-xs">Paper bank not started yet — runs at 10:10 UTC daily</div>`;
+// ── BANK PAGE ──────────────────────────────────────────────────────────────────
+function renderBank() {
+  const el = document.getElementById('bank-cards');
+  const bank = DATA.bank;
+  if (!bank?.strategies) {
+    el.innerHTML = `<div class="col-span-3 card p-5 text-slate-600 text-xs text-center py-8">Paper bank starts at 10:10 UTC daily</div>`;
+    renderBets([]);
     return;
   }
+  const ST = ['kelly_pure','kelly_shrunk','market_weighted'];
+  const LBL = { kelly_pure:'¼ Kelly Pure', kelly_shrunk:'Kelly Shrunk', market_weighted:'Mkt Weighted' };
+  const CLR = { kelly_pure:'text-blue-400', kelly_shrunk:'text-emerald-400', market_weighted:'text-orange-400' };
+  const BCLR = { kelly_pure:'rgba(59,130,246,0.08)', kelly_shrunk:'rgba(16,185,129,0.08)', market_weighted:'rgba(249,115,22,0.08)' };
+  const BBRD = { kelly_pure:'rgba(59,130,246,0.15)', kelly_shrunk:'rgba(16,185,129,0.15)', market_weighted:'rgba(249,115,22,0.15)' };
 
-  const STRATEGIES = ['kelly_pure', 'kelly_shrunk', 'market_weighted'];
-  const LABELS = { kelly_pure: '¼ Kelly', kelly_shrunk: 'Kelly Shrunk', market_weighted: 'Mkt Weighted' };
-  const COLORS = { kelly_pure: 'text-blue-400', kelly_shrunk: 'text-emerald-400', market_weighted: 'text-orange-400' };
-
-  el.innerHTML = STRATEGIES.map(s => {
+  const history = DATA.pnlHistory || {};
+  el.innerHTML = ST.map(s => {
     const st = bank.strategies[s];
     if (!st) return '';
-    const roi = ((st.bank - 100) / 100 * 100).toFixed(1);
-    const roiClass = st.bank >= 100 ? 'text-emerald-400' : 'text-red-400';
-    const roiSign = st.bank >= 100 ? '+' : '';
-    const open = st.open;
-    const history = pnlHistory[s] || [];
-    const wins = history.filter(b => b.won).length;
-    const total = history.length;
-
-    return `<div class="bg-slate-900/70 border border-slate-700 rounded-xl p-4">
-      <div class="text-xs text-slate-500 mb-1">${LABELS[s]}</div>
-      <div class="text-2xl font-bold ${COLORS[s]} mb-1">$${st.bank.toFixed(2)}</div>
-      <div class="text-xs ${roiClass} mb-3">${roiSign}${roi}% ROI</div>
-      ${total > 0 ? `<div class="text-xs text-slate-600">${wins}W / ${total-wins}L (${total} bets)</div>` : '<div class="text-xs text-slate-600">No bets yet</div>'}
-      ${open ? `<div class="mt-3 pt-3 border-t border-slate-700">
-        <div class="text-xs text-yellow-400 mb-1">OPEN BET</div>
-        <div class="text-xs text-slate-300">${open.betOn}</div>
-        <div class="text-xs text-slate-500">$${open.stake?.toFixed(2)} @ ${(open.price*100).toFixed(0)}%</div>
-        <div class="text-xs text-slate-600">${open.targetDate}</div>
-      </div>` : ''}
-    </div>`;
+    const roi = ((st.bank - 100) / 100 * 100);
+    const roiSign = roi >= 0 ? '+' : '';
+    const roiClr = roi >= 0 ? 'text-emerald-400' : 'text-red-400';
+    const wins = (history[s]||[]).filter(b=>b.won).length;
+    const total = (history[s]||[]).length;
+    return `
+      <div class="card p-4" style="background:linear-gradient(135deg,${BCLR[s]} 0%,#111827 60%);border-color:${BBRD[s]}">
+        <div class="text-xs text-slate-500 mb-2">${LBL[s]}</div>
+        <div class="text-2xl font-bold ${CLR[s]} mb-1 tabular-nums">$${st.bank.toFixed(2)}</div>
+        <div class="text-xs ${roiClr} mb-3 font-semibold">${roiSign}${roi.toFixed(1)}% ROI</div>
+        <div class="text-xs text-slate-600">${total ? wins+'W / '+(total-wins)+'L · '+total+' bets' : 'No bets yet'}</div>
+        ${st.open ? `<div class="mt-3 pt-3 border-t border-slate-700/40">
+          <div class="text-xs text-yellow-400/80 mb-1 font-semibold">● OPEN</div>
+          <div class="text-xs text-slate-300">${st.open.betOn}</div>
+          <div class="text-xs text-slate-500">$${st.open.stake?.toFixed(2)} @ ${(st.open.price*100).toFixed(0)}% · ${st.open.targetDate}</div>
+        </div>` : ''}
+      </div>`;
   }).join('');
+
+  renderBets(DATA.pnlHistory);
 }
 
-// ─── STATS CARDS ──────────────────────────────────────────────────────────────
-function renderStats(stats) {
-  const el = document.getElementById('stats-section');
-  if (!stats || stats.total === 0) {
-    el.innerHTML = `<div class="col-span-2 bg-slate-800 border border-slate-700 rounded-2xl p-5 text-slate-600 text-xs">No history data yet</div>`;
+function renderBets(pnlHistory) {
+  const el = document.getElementById('bets-table');
+  const all = [];
+  for (const [s, bets] of Object.entries(pnlHistory||{})) {
+    for (const b of bets) all.push({ ...b, strategy: s });
+  }
+  all.sort((a,b) => (b.date||'') > (a.date||'') ? 1 : -1);
+  if (!all.length) {
+    el.innerHTML = '<div class="text-slate-600 text-xs py-4 text-center">No settled bets yet</div>';
     return;
   }
-
-  const biasSign = stats.bias > 0 ? '+' : '';
-  const biasColor = Math.abs(stats.bias) < 0.3 ? 'text-emerald-400' : Math.abs(stats.bias) < 0.8 ? 'text-yellow-400' : 'text-red-400';
-
-  const cards = [
-    { label: 'Exact',    value: stats.exactPct + '%',               sub: stats.exactHits + '/' + stats.total + ' days', color: 'text-blue-400' },
-    { label: '±1°C',     value: stats.closePct + '%',               sub: stats.closeHits + '/' + stats.total + ' days', color: 'text-emerald-400' },
-    { label: 'MAE',      value: stats.mae != null ? stats.mae+'°C' : '—', sub: 'mean abs error',   color: 'text-yellow-400' },
-    { label: 'Bias',     value: stats.bias != null ? biasSign+stats.bias+'°C' : '—', sub: '+warm / −cold', color: biasColor },
-  ];
-
-  el.innerHTML = cards.map(c => `
-    <div class="bg-slate-900/70 border border-slate-700 rounded-xl p-4">
-      <div class="text-xs text-slate-500 mb-1">${c.label}</div>
-      <div class="text-xl font-bold ${c.color}">${c.value}</div>
-      <div class="text-xs text-slate-600 mt-1">${c.sub}</div>
-    </div>
-  `).join('');
+  const rows = all.slice(0,20).map(b => {
+    const wCls = b.won ? 'text-emerald-400' : 'text-red-400';
+    const dSign = b.delta >= 0 ? '+' : '';
+    return `<tr class="trow border-t border-slate-800/60">
+      <td class="py-2 pr-3 text-xs text-slate-500 whitespace-nowrap">${b.date||'—'}</td>
+      <td class="py-2 pr-3 text-xs text-slate-400 whitespace-nowrap">${{kelly_pure:'Pure',kelly_shrunk:'Shrunk',market_weighted:'Mkt'}[b.strategy]||b.strategy}</td>
+      <td class="py-2 pr-3 text-xs text-slate-300">${b.betOn||b.band||'—'}</td>
+      <td class="py-2 pr-3 text-xs text-right text-slate-500">$${b.stake?.toFixed(2)||'—'}</td>
+      <td class="py-2 text-xs text-right font-bold ${wCls}">${dSign}$${b.delta?.toFixed(2)||'—'}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<table class="w-full min-w-[400px]">
+    <thead><tr>
+      <th class="text-left text-xs text-slate-600 font-normal pb-2 pr-3">Date</th>
+      <th class="text-left text-xs text-slate-600 font-normal pb-2 pr-3">Strategy</th>
+      <th class="text-left text-xs text-slate-600 font-normal pb-2 pr-3">Bet</th>
+      <th class="text-right text-xs text-slate-600 font-normal pb-2 pr-3">Stake</th>
+      <th class="text-right text-xs text-slate-600 font-normal pb-2">P&L</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
 }
 
-// ─── P&L CHART ────────────────────────────────────────────────────────────────
+// ── P&L CHART ──────────────────────────────────────────────────────────────────
 function renderPnlChart(pnlHistory) {
-  const ctx = document.getElementById('pnl-chart').getContext('2d');
-  const STRATEGIES = ['kelly_pure', 'kelly_shrunk', 'market_weighted'];
-  const COLORS = { kelly_pure: '#60a5fa', kelly_shrunk: '#34d399', market_weighted: '#fb923c' };
+  const ctx = document.getElementById('pnl-chart')?.getContext('2d');
+  if (!ctx) return;
+  const ST = ['kelly_pure','kelly_shrunk','market_weighted'];
+  const CLR = { kelly_pure:'#60a5fa', kelly_shrunk:'#34d399', market_weighted:'#fb923c' };
 
-  // Collect all unique dates across strategies
   const dateSet = new Set();
-  for (const s of STRATEGIES) {
-    for (const p of (pnlHistory[s] || [])) { if (p.date) dateSet.add(p.date); }
-  }
-  const allDates = [...dateSet].sort();
+  for (const s of ST) for (const p of (pnlHistory[s]||[])) if (p.date) dateSet.add(p.date);
+  const dates = [...dateSet].sort();
 
-  // For each strategy build a series (carry last known value forward)
-  function buildSeries(s) {
-    const points = pnlHistory[s] || [];
-    if (allDates.length === 0) return [];
+  const datasets = ST.map(s => {
     const map = {};
-    for (const p of points) { if (p.date) map[p.date] = p.bank; }
+    for (const p of (pnlHistory[s]||[])) if (p.date) map[p.date] = p.bank;
     let last = 100;
-    return allDates.map(d => { if (map[d] != null) last = map[d]; return last; });
-  }
+    const data = dates.length ? dates.map(d => { if (map[d]!=null) last=map[d]; return last; }) : [100];
+    return {
+      label: s, data,
+      borderColor: CLR[s],
+      backgroundColor: CLR[s] + '12',
+      borderWidth: 2,
+      pointRadius: dates.length <= 14 ? 4 : 2,
+      pointHoverRadius: 6,
+      fill: false, tension: 0.35
+    };
+  });
 
-  const labels = allDates.length > 0 ? allDates : ['start'];
-  const datasets = STRATEGIES.map(s => ({
-    label: s,
-    data: allDates.length > 0 ? buildSeries(s) : [100],
-    borderColor: COLORS[s],
-    backgroundColor: COLORS[s] + '18',
-    borderWidth: 2,
-    pointRadius: allDates.length <= 20 ? 4 : 2,
-    pointHoverRadius: 6,
-    fill: false,
-    tension: 0.3,
-  }));
-
-  const chartOpts = {
-    responsive: true,
-    maintainAspectRatio: false,
+  const labels = dates.length ? dates : ['start'];
+  const opts = {
+    responsive: true, maintainAspectRatio: false,
     interaction: { intersect: false, mode: 'index' },
     plugins: {
       legend: { display: false },
       tooltip: {
-        backgroundColor: '#1e293b',
-        borderColor: '#334155',
-        borderWidth: 1,
-        titleColor: '#94a3b8',
-        bodyColor: '#f1f5f9',
-        callbacks: {
-          label: ctx => ` ${ctx.dataset.label}: $${ctx.parsed.y.toFixed(2)}`
-        }
+        backgroundColor: '#0f172a', borderColor: '#1e293b', borderWidth: 1,
+        titleColor: '#64748b', bodyColor: '#e2e8f0',
+        callbacks: { label: c => ` ${c.dataset.label.split('_').pop()}: $${c.parsed.y.toFixed(2)}` }
       }
     },
     scales: {
-      x: {
-        grid: { color: '#1e293b' },
-        ticks: { color: '#475569', font: { family: 'JetBrains Mono', size: 10 }, maxRotation: 0 }
-      },
-      y: {
-        grid: { color: '#1e293b' },
-        ticks: { color: '#475569', font: { family: 'JetBrains Mono', size: 10 }, callback: v => '$' + v.toFixed(0) }
-      }
+      x: { grid:{color:'rgba(255,255,255,0.03)'}, ticks:{color:'#334155',font:{family:'JetBrains Mono',size:10},maxRotation:0,maxTicksLimit:8} },
+      y: { grid:{color:'rgba(255,255,255,0.03)'}, ticks:{color:'#334155',font:{family:'JetBrains Mono',size:10},callback:v=>'$'+v.toFixed(0)} }
     }
   };
 
@@ -420,118 +512,136 @@ function renderPnlChart(pnlHistory) {
     pnlChart.data.datasets = datasets;
     pnlChart.update('none');
   } else {
-    pnlChart = new Chart(ctx, { type: 'line', data: { labels, datasets }, options: chartOpts });
+    pnlChart = new Chart(ctx, { type:'line', data:{labels,datasets}, options:opts });
   }
 }
 
-// ─── MODELS TABLE ─────────────────────────────────────────────────────────────
-function renderModels(forecasts) {
-  const el = document.getElementById('models-table');
-  const today = forecasts[0];
-  const tomorrow = forecasts[1];
-
-  if (!today && !tomorrow) {
-    el.innerHTML = '<div class="text-slate-600 text-xs">No forecast data</div>';
+// ── STATS ──────────────────────────────────────────────────────────────────────
+function renderStats() {
+  const el = document.getElementById('stats-cards');
+  const s = DATA.stats;
+  if (!s || s.total === 0) {
+    el.innerHTML = `<div class="col-span-4 card p-5 text-slate-600 text-xs text-center py-8">No history yet</div>`;
     return;
   }
-
-  const source = today || tomorrow;
-  const models = source.ensembleForecast.models || [];
-
-  // Build lookup for tomorrow temps by label
-  const tmrwByLabel = {};
-  if (tomorrow) {
-    for (const m of tomorrow.ensembleForecast.models) tmrwByLabel[m.label] = m.maxTemp;
-  }
-
-  // Build lookup for today
-  const todayByLabel = {};
-  if (today) {
-    for (const m of today.ensembleForecast.models) todayByLabel[m.label] = m.maxTemp;
-  }
-
-  const rows = models.map(m => {
-    const t0 = todayByLabel[m.label];
-    const t1 = tmrwByLabel[m.label];
-    const w = (m.normalizedWeight * 100).toFixed(1);
-    const wColor = m.metaError != null ? 'text-emerald-400' : 'text-slate-600';
-    return `<tr class="border-t border-slate-700/50 hover:bg-slate-700/20 transition-colors">
-      <td class="py-2 pr-4 text-xs font-semibold text-slate-300 whitespace-nowrap">${m.label}</td>
-      <td class="py-2 pr-4 text-xs text-slate-400 text-center">${t0 != null ? t0.toFixed(1) + '°C' : '—'}</td>
-      <td class="py-2 pr-4 text-xs text-slate-400 text-center">${t1 != null ? t1.toFixed(1) + '°C' : '—'}</td>
-      <td class="py-2 text-xs ${wColor} text-right">${m.metaError != null ? w+'%' : 'equal'}</td>
-    </tr>`;
-  }).join('');
-
-  el.innerHTML = `
-    <table class="w-full">
-      <thead>
-        <tr>
-          <th class="text-left text-xs text-slate-500 font-normal pb-2 pr-4">Model</th>
-          <th class="text-center text-xs text-slate-500 font-normal pb-2 pr-4">Today<br><span class="text-slate-600">${today?.targetDate || '—'}</span></th>
-          <th class="text-center text-xs text-slate-500 font-normal pb-2 pr-4">Tomorrow<br><span class="text-slate-600">${tomorrow?.targetDate || '—'}</span></th>
-          <th class="text-right text-xs text-slate-500 font-normal pb-2">Weight</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <div class="mt-3 text-xs text-slate-600">Weights calibrated after ~2 weeks of data. Currently equal.</div>
-  `;
+  const biasSign = s.bias > 0 ? '+' : '';
+  const biasCls = Math.abs(s.bias) < 0.3 ? 'text-emerald-400' : Math.abs(s.bias) < 0.8 ? 'text-yellow-400' : 'text-red-400';
+  const cards = [
+    { l:'Exact hit', v:s.exactPct+'%', s:s.exactHits+'/'+s.total, c:'text-blue-400',    bg:'rgba(59,130,246,0.07)',  bd:'rgba(59,130,246,0.12)' },
+    { l:'Within ±1°',v:s.closePct+'%', s:s.closeHits+'/'+s.total, c:'text-emerald-400', bg:'rgba(16,185,129,0.07)', bd:'rgba(16,185,129,0.12)' },
+    { l:'MAE',       v:s.mae!=null?s.mae+'°':'—', s:'mean abs err', c:'text-yellow-400', bg:'rgba(245,158,11,0.07)',  bd:'rgba(245,158,11,0.12)' },
+    { l:'Bias ERA5', v:s.bias!=null?biasSign+s.bias+'°':'—', s:'+warm / −cold', c:biasCls, bg:'rgba(255,255,255,0.03)', bd:'rgba(255,255,255,0.06)' },
+  ];
+  el.innerHTML = cards.map(c => `
+    <div class="rounded-2xl p-4" style="background:${c.bg};border:1px solid ${c.bd}">
+      <div class="text-xs text-slate-500 mb-1.5">${c.l}</div>
+      <div class="text-2xl font-bold ${c.c} tabular-nums">${c.v}</div>
+      <div class="text-xs text-slate-600 mt-1">${c.s}</div>
+    </div>`).join('');
 }
 
-// ─── HISTORY TABLE ────────────────────────────────────────────────────────────
-function renderHistory(history) {
+// ── HISTORY TABLE ──────────────────────────────────────────────────────────────
+function renderHistory() {
   const el = document.getElementById('history-table');
-  if (!history || history.length === 0) {
-    el.innerHTML = '<div class="text-slate-600 text-xs">No history data yet — observed facts accumulate after daily run</div>';
+  const hist = DATA.history || [];
+  if (!hist.length) {
+    el.innerHTML = '<div class="text-slate-600 text-xs py-8 text-center">No history data yet</div>';
     return;
   }
+  const rows = hist.map(h => {
+    let badge;
+    if (h.actual == null) badge = `<span class="badge badge-pend">pending</span>`;
+    else if (h.hit)       badge = `<span class="badge badge-exact">EXACT</span>`;
+    else if (h.close)     badge = `<span class="badge badge-close">±1°C</span>`;
+    else                  badge = `<span class="badge badge-miss">MISS</span>`;
+    const eCls = h.error==null?'text-slate-600':Math.abs(h.error)===0?'text-emerald-400':Math.abs(h.error)<=1?'text-yellow-400':'text-red-400';
+    return `<tr class="trow border-t border-slate-800/60">
+      <td class="py-2.5 pr-3 text-xs text-slate-400 whitespace-nowrap">${h.date}</td>
+      <td class="py-2.5 pr-3 text-xs text-blue-300 text-center">${h.betOn||'—'}</td>
+      <td class="py-2.5 pr-3 text-xs text-slate-300 text-center">${h.actual!=null?h.actual+'°C':'—'}</td>
+      <td class="py-2.5 pr-3 text-xs text-slate-600 text-center">${h.actualEra5!=null?h.actualEra5.toFixed(1)+'°':'—'}</td>
+      <td class="py-2.5 pr-3 text-center">${badge}</td>
+      <td class="py-2.5 text-xs text-right font-semibold ${eCls} tabular-nums">${h.error!=null?(h.error>0?'+':'')+h.error+'°':'—'}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<table class="w-full min-w-[420px]">
+    <thead><tr>
+      <th class="text-left text-xs text-slate-600 font-normal pb-2 pr-3">Date</th>
+      <th class="text-center text-xs text-slate-600 font-normal pb-2 pr-3">Bet on</th>
+      <th class="text-center text-xs text-slate-600 font-normal pb-2 pr-3">Actual</th>
+      <th class="text-center text-xs text-slate-600 font-normal pb-2 pr-3">ERA5</th>
+      <th class="text-center text-xs text-slate-600 font-normal pb-2 pr-3">Result</th>
+      <th class="text-right text-xs text-slate-600 font-normal pb-2">Error</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
 
-  const rows = history.map(h => {
-    let badge = '';
-    if (h.actual == null) {
-      badge = '<span class="text-xs text-slate-600">pending</span>';
-    } else if (h.hit) {
-      badge = '<span class="text-xs px-2 py-0.5 rounded hit-badge">EXACT</span>';
-    } else if (h.close) {
-      badge = '<span class="text-xs px-2 py-0.5 rounded close-badge">±1°C</span>';
-    } else {
-      badge = '<span class="text-xs px-2 py-0.5 rounded miss-badge">MISS</span>';
-    }
+// ── MODELS PAGE ────────────────────────────────────────────────────────────────
+function renderModels() {
+  const el = document.getElementById('models-content');
+  const f0 = DATA.forecasts[0];
+  const f1 = DATA.forecasts[1];
+  if (!f0 && !f1) {
+    el.innerHTML = '<div class="card p-5 text-slate-600 text-xs text-center py-8">No forecast data</div>';
+    return;
+  }
+  const src = f0 || f1;
+  const t0 = {}; if (f0) for (const m of f0.ensembleForecast.models) t0[m.label] = m;
+  const t1 = {}; if (f1) for (const m of f1.ensembleForecast.models) t1[m.label] = m;
 
-    const errColor = h.error == null ? 'text-slate-600'
-      : Math.abs(h.error) === 0 ? 'text-emerald-400'
-      : Math.abs(h.error) <= 1 ? 'text-yellow-400'
-      : 'text-red-400';
+  const all = src.ensembleForecast.models.map(m => m.label);
+  // sort by today's temp desc
+  all.sort((a,b) => ((t0[b]||t1[b])?.maxTemp||0) - ((t0[a]||t1[a])?.maxTemp||0));
 
-    const era5 = h.actualEra5 != null ? h.actualEra5.toFixed(1) + '°' : '—';
+  const consensus0 = f0?.ensembleForecast?.consensus?.consensusValue;
+  const consensus1 = f1?.ensembleForecast?.consensus?.consensusValue;
 
-    return `<tr class="border-t border-slate-700/40 hover:bg-slate-700/20 transition-colors">
-      <td class="py-2 pr-4 text-xs text-slate-400 whitespace-nowrap">${h.date}</td>
-      <td class="py-2 pr-4 text-xs text-center text-blue-300">${h.betOn || '—'}</td>
-      <td class="py-2 pr-4 text-xs text-center text-slate-300">${h.actual != null ? h.actual + '°C' : '—'}</td>
-      <td class="py-2 pr-4 text-xs text-center text-slate-600">${era5}</td>
-      <td class="py-2 pr-4 text-center">${badge}</td>
-      <td class="py-2 text-xs text-right ${errColor}">${h.error != null ? (h.error > 0 ? '+' : '') + h.error + '°' : '—'}</td>
+  const rows = all.map(label => {
+    const m0 = t0[label]; const m1 = t1[label];
+    const temp0 = m0?.maxTemp; const temp1 = m1?.maxTemp;
+    const diff = temp0!=null && temp1!=null ? temp1-temp0 : null;
+    const diffSign = diff != null ? (diff>0?'+':'') : '';
+    const diffCls = diff == null ? 'text-slate-700' : diff > 0.5 ? 'text-orange-400' : diff < -0.5 ? 'text-blue-400' : 'text-slate-500';
+    const w = (m0||m1)?.normalizedWeight;
+    return `<tr class="trow border-t border-slate-800/50">
+      <td class="py-3 pr-4 text-xs font-semibold text-slate-200 whitespace-nowrap">${label}</td>
+      <td class="py-3 pr-4 text-xs text-center tabular-nums ${temp0!=null?'text-slate-300':'text-slate-700'}">${temp0!=null?temp0.toFixed(1)+'°':'—'}</td>
+      <td class="py-3 pr-4 text-xs text-center tabular-nums ${temp1!=null?'text-slate-300':'text-slate-700'}">${temp1!=null?temp1.toFixed(1)+'°':'—'}</td>
+      <td class="py-3 pr-4 text-xs text-center font-semibold tabular-nums ${diffCls}">${diff!=null?diffSign+diff.toFixed(1)+'°':'—'}</td>
+      <td class="py-3 text-xs text-right text-slate-600">${w!=null?(w*100).toFixed(1)+'%':'equal'}</td>
     </tr>`;
   }).join('');
 
   el.innerHTML = `
-    <table class="w-full">
-      <thead>
-        <tr>
-          <th class="text-left text-xs text-slate-500 font-normal pb-2 pr-4">Date</th>
-          <th class="text-center text-xs text-slate-500 font-normal pb-2 pr-4">Bet On</th>
-          <th class="text-center text-xs text-slate-500 font-normal pb-2 pr-4">Actual (band)</th>
-          <th class="text-center text-xs text-slate-500 font-normal pb-2 pr-4">ERA5</th>
-          <th class="text-center text-xs text-slate-500 font-normal pb-2 pr-4">Result</th>
-          <th class="text-right text-xs text-slate-500 font-normal pb-2">Error</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-  `;
+    <div class="grid grid-cols-2 gap-3 mb-4">
+      <div class="card p-4 text-center">
+        <div class="text-xs text-slate-500 mb-1">Today consensus</div>
+        <div class="text-2xl font-bold text-blue-300 tabular-nums">${consensus0!=null?consensus0+'°C':'—'}</div>
+        <div class="text-xs text-slate-600 mt-1">${f0?.targetDate||'—'}</div>
+      </div>
+      <div class="card p-4 text-center">
+        <div class="text-xs text-slate-500 mb-1">Tomorrow consensus</div>
+        <div class="text-2xl font-bold text-slate-300 tabular-nums">${consensus1!=null?consensus1+'°C':'—'}</div>
+        <div class="text-xs text-slate-600 mt-1">${f1?.targetDate||'—'}</div>
+      </div>
+    </div>
+    <div class="card p-5">
+      <div class="text-xs text-slate-500 uppercase tracking-widest font-semibold mb-4">12 Models</div>
+      <div class="table-wrap">
+        <table class="w-full min-w-[380px]">
+          <thead><tr>
+            <th class="text-left text-xs text-slate-600 font-normal pb-2 pr-4">Model</th>
+            <th class="text-center text-xs text-slate-600 font-normal pb-2 pr-4">Today</th>
+            <th class="text-center text-xs text-slate-600 font-normal pb-2 pr-4">Tomorrow</th>
+            <th class="text-center text-xs text-slate-600 font-normal pb-2 pr-4">Δ</th>
+            <th class="text-right text-xs text-slate-600 font-normal pb-2">Weight</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="mt-4 text-xs text-slate-700">Weights calibrate after ~2 weeks of data. Equal until then.</div>
+    </div>`;
 }
 </script>
-</body>
 </html>
