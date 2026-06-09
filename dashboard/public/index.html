@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>weatherBOT | London Temp</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'JetBrains Mono', monospace; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    .live-dot { animation: livepulse 2s ease-in-out infinite; }
+    @keyframes livepulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .edge-pos { color: #4ade80; }
+    .edge-neg { color: #f87171; }
+    .edge-neu { color: #fbbf24; }
+    .hit-badge { background:#166534; color:#86efac; }
+    .miss-badge { background:#7f1d1d; color:#fca5a5; }
+    .close-badge { background:#854d0e; color:#fde68a; }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+
+  <!-- HEADER -->
+  <header class="sticky top-0 z-20 border-b border-slate-700/80 bg-slate-900/95 backdrop-blur-sm">
+    <div class="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <span class="text-blue-400 font-bold text-base">weatherBOT</span>
+        <span class="hidden sm:block text-slate-600 text-xs">London Max Temp · Polymarket</span>
+      </div>
+      <div class="flex items-center gap-4 text-xs text-slate-400">
+        <span id="last-update-label">—</span>
+        <span class="flex items-center gap-1.5">
+          <span class="live-dot w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block"></span>
+          <span id="countdown">60s</span>
+        </span>
+        <button onclick="refreshNow()" class="text-slate-500 hover:text-slate-200 transition-colors">↻</button>
+        <a href="/logout" class="text-slate-500 hover:text-slate-200 transition-colors">logout</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-4 py-5 space-y-5">
+
+    <!-- FORECASTS: TODAY + TOMORROW -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div id="card-today"  class="bg-slate-800 border border-slate-700 rounded-2xl p-5 min-h-[420px]"><div class="text-slate-600 text-xs animate-pulse">Loading…</div></div>
+      <div id="card-tomorrow" class="bg-slate-800 border border-slate-700 rounded-2xl p-5 min-h-[420px]"><div class="text-slate-600 text-xs animate-pulse">Loading…</div></div>
+    </div>
+
+    <!-- BANK CARDS + STATS -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div id="bank-section" class="lg:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-3"></div>
+      <div id="stats-section" class="grid grid-cols-2 gap-3"></div>
+    </div>
+
+    <!-- P&L CHART -->
+    <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">P&amp;L — Paper Trading (Virtual $100 each)</h2>
+        <div class="flex gap-4 text-xs text-slate-500">
+          <span class="flex items-center gap-1.5"><span class="inline-block w-5 h-0.5 bg-blue-400 rounded"></span>kelly_pure</span>
+          <span class="flex items-center gap-1.5"><span class="inline-block w-5 h-0.5 bg-emerald-400 rounded"></span>kelly_shrunk</span>
+          <span class="flex items-center gap-1.5"><span class="inline-block w-5 h-0.5 bg-orange-400 rounded"></span>market_weighted</span>
+        </div>
+      </div>
+      <div style="height:220px"><canvas id="pnl-chart"></canvas></div>
+    </div>
+
+    <!-- MODEL COMPARISON TABLE -->
+    <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5">
+      <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-4">Ensemble — 12 Models</h2>
+      <div id="models-table" class="overflow-x-auto"><div class="text-slate-600 text-xs animate-pulse">Loading…</div></div>
+    </div>
+
+    <!-- HISTORY TABLE -->
+    <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5">
+      <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-4">History — Last 30 days</h2>
+      <div id="history-table" class="overflow-x-auto"><div class="text-slate-600 text-xs animate-pulse">Loading…</div></div>
+    </div>
+
+  </main>
+
+<script>
+// ─── STATE ────────────────────────────────────────────────────────────────────
+let pnlChart = null;
+let countdownVal = 60;
+let countdownInterval = null;
+
+// ─── BOOTSTRAP ────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  fetchData();
+  countdownInterval = setInterval(tick, 1000);
+});
+
+function tick() {
+  countdownVal--;
+  document.getElementById('countdown').textContent = countdownVal + 's';
+  if (countdownVal <= 0) { countdownVal = 60; fetchData(); }
+}
+
+function refreshNow() {
+  countdownVal = 60;
+  document.getElementById('countdown').textContent = '60s';
+  fetchData();
+}
+
+// ─── DATA FETCH ───────────────────────────────────────────────────────────────
+async function fetchData() {
+  try {
+    const res = await fetch('/api/data');
+    if (!res.ok) { if (res.status === 401) location.href = '/login'; return; }
+    const data = await res.json();
+
+    renderForecasts(data.forecasts);
+    renderBank(data.bank, data.pnlHistory);
+    renderStats(data.stats);
+    renderPnlChart(data.pnlHistory);
+    renderModels(data.forecasts);
+    renderHistory(data.history);
+
+    const t = new Date(data.updatedAt);
+    const hhmm = t.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+    document.getElementById('last-update-label').textContent = 'Updated ' + hhmm + ' UTC';
+  } catch (e) {
+    console.error('fetch error', e);
+  }
+}
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+function fmt(n, d = 1) { return n != null ? n.toFixed(d) : '—'; }
+function pct(n) { return n != null ? (n * 100).toFixed(0) + '%' : '—'; }
+function edgeClass(e) { return e > 0.05 ? 'edge-pos' : e > 0 ? 'edge-neu' : 'edge-neg'; }
+function confBadge(label) {
+  const map = { high: 'bg-emerald-900 text-emerald-300', medium: 'bg-yellow-900 text-yellow-300', low: 'bg-red-900/60 text-red-300' };
+  return map[label] || 'bg-slate-700 text-slate-400';
+}
+function timeAgo(ts) {
+  const diff = Math.round((Date.now() - new Date(ts)) / 60000);
+  if (diff < 1) return 'just now';
+  if (diff < 60) return diff + 'm ago';
+  return Math.round(diff / 60) + 'h ago';
+}
+
+// ─── FORECAST CARD ────────────────────────────────────────────────────────────
+function renderForecasts(forecasts) {
+  renderForecastCard('card-today',    forecasts[0], 'TODAY');
+  renderForecastCard('card-tomorrow', forecasts[1], 'TOMORROW');
+}
+
+function renderForecastCard(elId, fc, label) {
+  const el = document.getElementById(elId);
+  if (!fc) {
+    el.innerHTML = `<div class="text-slate-600 text-xs">No ${label.toLowerCase()} forecast yet</div>`;
+    return;
+  }
+
+  const d = fc.decision;
+  const s = fc.ensembleForecast.stats;
+  const con = fc.ensembleForecast.consensus;
+  const edge = d.bestValue ? d.bestValue.edge : 0;
+  const edgeCls = edgeClass(edge);
+  const edgeSign = edge >= 0 ? '+' : '';
+
+  // Market outcomes bars
+  const outcomes = (fc.market && fc.market.outcomes) || [];
+  const maxP = Math.max(...outcomes.map(o => o.price), 0.001);
+  const outcomesHTML = outcomes.map(o => {
+    const isBet = o.name === d.betOn;
+    const barW = Math.round(o.price / maxP * 100);
+    const nameClass = isBet ? 'text-blue-300 font-semibold' : 'text-slate-500';
+    const barColor = isBet ? 'bg-blue-400' : 'bg-slate-600';
+    const rowBg = isBet ? 'bg-blue-900/30 rounded-md' : '';
+    return `<tr class="${rowBg}">
+      <td class="py-0.5 px-1 text-xs ${nameClass} whitespace-nowrap w-32">${o.name}${isBet ? ' ★' : ''}</td>
+      <td class="py-0.5 px-1 w-28">
+        <div class="h-1.5 bg-slate-700 rounded-full"><div class="${barColor} h-full rounded-full" style="width:${barW}%"></div></div>
+      </td>
+      <td class="py-0.5 px-1 text-xs text-right ${isBet ? 'text-blue-300' : 'text-slate-600'}">${(o.price*100).toFixed(1)}%</td>
+    </tr>`;
+  }).join('');
+
+  // Value table (all outcomes with edge)
+  const valRows = (d.value || []).slice(0, 5).map(v => {
+    const eCls = edgeClass(v.edge);
+    const eSign = v.edge >= 0 ? '+' : '';
+    return `<tr>
+      <td class="py-0.5 pr-3 text-xs text-slate-400 whitespace-nowrap">${v.name}</td>
+      <td class="py-0.5 pr-3 text-xs text-blue-300">${(v.ourP*100).toFixed(0)}%</td>
+      <td class="py-0.5 pr-3 text-xs text-slate-500">${(v.price*100).toFixed(1)}%</td>
+      <td class="py-0.5 text-xs font-semibold ${eCls}">${eSign}${(v.edge*100).toFixed(1)}%</td>
+    </tr>`;
+  }).join('');
+
+  // Model distribution (band → list of models)
+  const models = fc.ensembleForecast.models || [];
+  const byBand = {};
+  for (const m of models) {
+    const b = Math.round(m.maxTemp).toString();
+    if (!byBand[b]) byBand[b] = [];
+    byBand[b].push(m.label);
+  }
+  const dist = d.distribution || {};
+  const distHTML = Object.entries(dist)
+    .sort((a, b) => parseFloat(b[1]) - parseFloat(a[1]))
+    .map(([band, p]) => {
+      const mods = byBand[band] || [];
+      const isBet = band + '°C' === d.betOn || band === d.betOn?.replace('°C','');
+      return `<tr>
+        <td class="py-0.5 pr-2 text-xs ${isBet ? 'text-blue-300' : 'text-slate-500'} whitespace-nowrap">${band}°C</td>
+        <td class="py-0.5 pr-3 text-xs text-slate-300">${Math.round(p*100)}%</td>
+        <td class="py-0.5 text-xs text-slate-600 truncate max-w-xs">${mods.join(', ')}</td>
+      </tr>`;
+    }).join('');
+
+  el.innerHTML = `
+    <div class="flex items-start justify-between mb-4">
+      <div>
+        <div class="text-xs text-slate-500 uppercase tracking-widest font-semibold">${label}</div>
+        <div class="text-slate-200 font-medium mt-0.5">${fc.targetDate}</div>
+        <div class="text-xs text-slate-600 mt-0.5">${timeAgo(fc.timestamp)}</div>
+      </div>
+      <span class="text-xs px-2 py-1 rounded-full ${confBadge(d.confidenceLabel)}">${d.confidenceLabel}</span>
+    </div>
+
+    <div class="flex items-baseline gap-2 mb-4">
+      <span class="text-6xl font-bold text-white leading-none">${d.betOn ? d.betOn.replace('°C','') : '—'}</span>
+      <span class="text-2xl text-slate-500">°C</span>
+      <span class="text-xs text-slate-600 ml-1 self-end mb-1">bet on</span>
+    </div>
+
+    <div class="grid grid-cols-4 gap-2 mb-5">
+      <div class="bg-slate-900/60 rounded-lg p-2 text-center">
+        <div class="text-xs text-slate-500 mb-1">Our P</div>
+        <div class="text-sm font-bold text-blue-300">${d.bestValue ? (d.bestValue.ourP*100).toFixed(0)+'%' : '—'}</div>
+      </div>
+      <div class="bg-slate-900/60 rounded-lg p-2 text-center">
+        <div class="text-xs text-slate-500 mb-1">Market</div>
+        <div class="text-sm font-bold text-slate-300">${d.marketPrice ? (d.marketPrice*100).toFixed(0)+'%' : '—'}</div>
+      </div>
+      <div class="bg-slate-900/60 rounded-lg p-2 text-center">
+        <div class="text-xs text-slate-500 mb-1">Edge</div>
+        <div class="text-sm font-bold ${edgeCls}">${edgeSign}${(edge*100).toFixed(1)}%</div>
+      </div>
+      <div class="bg-slate-900/60 rounded-lg p-2 text-center">
+        <div class="text-xs text-slate-500 mb-1">Spread</div>
+        <div class="text-sm font-bold text-slate-300">${fmt(s.spread)}°</div>
+      </div>
+    </div>
+
+    <div class="text-xs text-slate-500 mb-2 uppercase tracking-wider">Market Odds</div>
+    <table class="w-full mb-4">${outcomesHTML}</table>
+
+    <details class="group">
+      <summary class="text-xs text-slate-500 uppercase tracking-wider cursor-pointer hover:text-slate-300 transition-colors mb-2 list-none flex items-center gap-1">
+        <span class="group-open:rotate-90 transition-transform inline-block">▶</span> Value Table
+      </summary>
+      <table class="w-full mb-4">
+        <thead><tr>
+          <th class="text-left text-xs text-slate-600 font-normal pb-1">Band</th>
+          <th class="text-left text-xs text-slate-600 font-normal pb-1">Our P</th>
+          <th class="text-left text-xs text-slate-600 font-normal pb-1">Market</th>
+          <th class="text-left text-xs text-slate-600 font-normal pb-1">Edge</th>
+        </tr></thead>
+        <tbody>${valRows}</tbody>
+      </table>
+    </details>
+
+    <details class="group">
+      <summary class="text-xs text-slate-500 uppercase tracking-wider cursor-pointer hover:text-slate-300 transition-colors mb-2 list-none flex items-center gap-1">
+        <span class="group-open:rotate-90 transition-transform inline-block">▶</span> Model Votes
+      </summary>
+      <table class="w-full">
+        <thead><tr>
+          <th class="text-left text-xs text-slate-600 font-normal pb-1">Band</th>
+          <th class="text-left text-xs text-slate-600 font-normal pb-1">Votes</th>
+          <th class="text-left text-xs text-slate-600 font-normal pb-1">Models</th>
+        </tr></thead>
+        <tbody>${distHTML}</tbody>
+      </table>
+    </details>
+  `;
+}
+
+// ─── BANK CARDS ───────────────────────────────────────────────────────────────
+function renderBank(bank, pnlHistory) {
+  const el = document.getElementById('bank-section');
+  if (!bank || !bank.strategies) {
+    el.innerHTML = `<div class="col-span-3 bg-slate-800 border border-slate-700 rounded-2xl p-5 text-slate-600 text-xs">Paper bank not started yet — runs at 10:10 UTC daily</div>`;
+    return;
+  }
+
+  const STRATEGIES = ['kelly_pure', 'kelly_shrunk', 'market_weighted'];
+  const LABELS = { kelly_pure: '¼ Kelly', kelly_shrunk: 'Kelly Shrunk', market_weighted: 'Mkt Weighted' };
+  const COLORS = { kelly_pure: 'text-blue-400', kelly_shrunk: 'text-emerald-400', market_weighted: 'text-orange-400' };
+
+  el.innerHTML = STRATEGIES.map(s => {
+    const st = bank.strategies[s];
+    if (!st) return '';
+    const roi = ((st.bank - 100) / 100 * 100).toFixed(1);
+    const roiClass = st.bank >= 100 ? 'text-emerald-400' : 'text-red-400';
+    const roiSign = st.bank >= 100 ? '+' : '';
+    const open = st.open;
+    const history = pnlHistory[s] || [];
+    const wins = history.filter(b => b.won).length;
+    const total = history.length;
+
+    return `<div class="bg-slate-900/70 border border-slate-700 rounded-xl p-4">
+      <div class="text-xs text-slate-500 mb-1">${LABELS[s]}</div>
+      <div class="text-2xl font-bold ${COLORS[s]} mb-1">$${st.bank.toFixed(2)}</div>
+      <div class="text-xs ${roiClass} mb-3">${roiSign}${roi}% ROI</div>
+      ${total > 0 ? `<div class="text-xs text-slate-600">${wins}W / ${total-wins}L (${total} bets)</div>` : '<div class="text-xs text-slate-600">No bets yet</div>'}
+      ${open ? `<div class="mt-3 pt-3 border-t border-slate-700">
+        <div class="text-xs text-yellow-400 mb-1">OPEN BET</div>
+        <div class="text-xs text-slate-300">${open.betOn}</div>
+        <div class="text-xs text-slate-500">$${open.stake?.toFixed(2)} @ ${(open.price*100).toFixed(0)}%</div>
+        <div class="text-xs text-slate-600">${open.targetDate}</div>
+      </div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// ─── STATS CARDS ──────────────────────────────────────────────────────────────
+function renderStats(stats) {
+  const el = document.getElementById('stats-section');
+  if (!stats || stats.total === 0) {
+    el.innerHTML = `<div class="col-span-2 bg-slate-800 border border-slate-700 rounded-2xl p-5 text-slate-600 text-xs">No history data yet</div>`;
+    return;
+  }
+
+  const biasSign = stats.bias > 0 ? '+' : '';
+  const biasColor = Math.abs(stats.bias) < 0.3 ? 'text-emerald-400' : Math.abs(stats.bias) < 0.8 ? 'text-yellow-400' : 'text-red-400';
+
+  const cards = [
+    { label: 'Exact',    value: stats.exactPct + '%',               sub: stats.exactHits + '/' + stats.total + ' days', color: 'text-blue-400' },
+    { label: '±1°C',     value: stats.closePct + '%',               sub: stats.closeHits + '/' + stats.total + ' days', color: 'text-emerald-400' },
+    { label: 'MAE',      value: stats.mae != null ? stats.mae+'°C' : '—', sub: 'mean abs error',   color: 'text-yellow-400' },
+    { label: 'Bias',     value: stats.bias != null ? biasSign+stats.bias+'°C' : '—', sub: '+warm / −cold', color: biasColor },
+  ];
+
+  el.innerHTML = cards.map(c => `
+    <div class="bg-slate-900/70 border border-slate-700 rounded-xl p-4">
+      <div class="text-xs text-slate-500 mb-1">${c.label}</div>
+      <div class="text-xl font-bold ${c.color}">${c.value}</div>
+      <div class="text-xs text-slate-600 mt-1">${c.sub}</div>
+    </div>
+  `).join('');
+}
+
+// ─── P&L CHART ────────────────────────────────────────────────────────────────
+function renderPnlChart(pnlHistory) {
+  const ctx = document.getElementById('pnl-chart').getContext('2d');
+  const STRATEGIES = ['kelly_pure', 'kelly_shrunk', 'market_weighted'];
+  const COLORS = { kelly_pure: '#60a5fa', kelly_shrunk: '#34d399', market_weighted: '#fb923c' };
+
+  // Collect all unique dates across strategies
+  const dateSet = new Set();
+  for (const s of STRATEGIES) {
+    for (const p of (pnlHistory[s] || [])) { if (p.date) dateSet.add(p.date); }
+  }
+  const allDates = [...dateSet].sort();
+
+  // For each strategy build a series (carry last known value forward)
+  function buildSeries(s) {
+    const points = pnlHistory[s] || [];
+    if (allDates.length === 0) return [];
+    const map = {};
+    for (const p of points) { if (p.date) map[p.date] = p.bank; }
+    let last = 100;
+    return allDates.map(d => { if (map[d] != null) last = map[d]; return last; });
+  }
+
+  const labels = allDates.length > 0 ? allDates : ['start'];
+  const datasets = STRATEGIES.map(s => ({
+    label: s,
+    data: allDates.length > 0 ? buildSeries(s) : [100],
+    borderColor: COLORS[s],
+    backgroundColor: COLORS[s] + '18',
+    borderWidth: 2,
+    pointRadius: allDates.length <= 20 ? 4 : 2,
+    pointHoverRadius: 6,
+    fill: false,
+    tension: 0.3,
+  }));
+
+  const chartOpts = {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { intersect: false, mode: 'index' },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: '#1e293b',
+        borderColor: '#334155',
+        borderWidth: 1,
+        titleColor: '#94a3b8',
+        bodyColor: '#f1f5f9',
+        callbacks: {
+          label: ctx => ` ${ctx.dataset.label}: $${ctx.parsed.y.toFixed(2)}`
+        }
+      }
+    },
+    scales: {
+      x: {
+        grid: { color: '#1e293b' },
+        ticks: { color: '#475569', font: { family: 'JetBrains Mono', size: 10 }, maxRotation: 0 }
+      },
+      y: {
+        grid: { color: '#1e293b' },
+        ticks: { color: '#475569', font: { family: 'JetBrains Mono', size: 10 }, callback: v => '$' + v.toFixed(0) }
+      }
+    }
+  };
+
+  if (pnlChart) {
+    pnlChart.data.labels = labels;
+    pnlChart.data.datasets = datasets;
+    pnlChart.update('none');
+  } else {
+    pnlChart = new Chart(ctx, { type: 'line', data: { labels, datasets }, options: chartOpts });
+  }
+}
+
+// ─── MODELS TABLE ─────────────────────────────────────────────────────────────
+function renderModels(forecasts) {
+  const el = document.getElementById('models-table');
+  const today = forecasts[0];
+  const tomorrow = forecasts[1];
+
+  if (!today && !tomorrow) {
+    el.innerHTML = '<div class="text-slate-600 text-xs">No forecast data</div>';
+    return;
+  }
+
+  const source = today || tomorrow;
+  const models = source.ensembleForecast.models || [];
+
+  // Build lookup for tomorrow temps by label
+  const tmrwByLabel = {};
+  if (tomorrow) {
+    for (const m of tomorrow.ensembleForecast.models) tmrwByLabel[m.label] = m.maxTemp;
+  }
+
+  // Build lookup for today
+  const todayByLabel = {};
+  if (today) {
+    for (const m of today.ensembleForecast.models) todayByLabel[m.label] = m.maxTemp;
+  }
+
+  const rows = models.map(m => {
+    const t0 = todayByLabel[m.label];
+    const t1 = tmrwByLabel[m.label];
+    const w = (m.normalizedWeight * 100).toFixed(1);
+    const wColor = m.metaError != null ? 'text-emerald-400' : 'text-slate-600';
+    return `<tr class="border-t border-slate-700/50 hover:bg-slate-700/20 transition-colors">
+      <td class="py-2 pr-4 text-xs font-semibold text-slate-300 whitespace-nowrap">${m.label}</td>
+      <td class="py-2 pr-4 text-xs text-slate-400 text-center">${t0 != null ? t0.toFixed(1) + '°C' : '—'}</td>
+      <td class="py-2 pr-4 text-xs text-slate-400 text-center">${t1 != null ? t1.toFixed(1) + '°C' : '—'}</td>
+      <td class="py-2 text-xs ${wColor} text-right">${m.metaError != null ? w+'%' : 'equal'}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <table class="w-full">
+      <thead>
+        <tr>
+          <th class="text-left text-xs text-slate-500 font-normal pb-2 pr-4">Model</th>
+          <th class="text-center text-xs text-slate-500 font-normal pb-2 pr-4">Today<br><span class="text-slate-600">${today?.targetDate || '—'}</span></th>
+          <th class="text-center text-xs text-slate-500 font-normal pb-2 pr-4">Tomorrow<br><span class="text-slate-600">${tomorrow?.targetDate || '—'}</span></th>
+          <th class="text-right text-xs text-slate-500 font-normal pb-2">Weight</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="mt-3 text-xs text-slate-600">Weights calibrated after ~2 weeks of data. Currently equal.</div>
+  `;
+}
+
+// ─── HISTORY TABLE ────────────────────────────────────────────────────────────
+function renderHistory(history) {
+  const el = document.getElementById('history-table');
+  if (!history || history.length === 0) {
+    el.innerHTML = '<div class="text-slate-600 text-xs">No history data yet — observed facts accumulate after daily run</div>';
+    return;
+  }
+
+  const rows = history.map(h => {
+    let badge = '';
+    if (h.actual == null) {
+      badge = '<span class="text-xs text-slate-600">pending</span>';
+    } else if (h.hit) {
+      badge = '<span class="text-xs px-2 py-0.5 rounded hit-badge">EXACT</span>';
+    } else if (h.close) {
+      badge = '<span class="text-xs px-2 py-0.5 rounded close-badge">±1°C</span>';
+    } else {
+      badge = '<span class="text-xs px-2 py-0.5 rounded miss-badge">MISS</span>';
+    }
+
+    const errColor = h.error == null ? 'text-slate-600'
+      : Math.abs(h.error) === 0 ? 'text-emerald-400'
+      : Math.abs(h.error) <= 1 ? 'text-yellow-400'
+      : 'text-red-400';
+
+    const era5 = h.actualEra5 != null ? h.actualEra5.toFixed(1) + '°' : '—';
+
+    return `<tr class="border-t border-slate-700/40 hover:bg-slate-700/20 transition-colors">
+      <td class="py-2 pr-4 text-xs text-slate-400 whitespace-nowrap">${h.date}</td>
+      <td class="py-2 pr-4 text-xs text-center text-blue-300">${h.betOn || '—'}</td>
+      <td class="py-2 pr-4 text-xs text-center text-slate-300">${h.actual != null ? h.actual + '°C' : '—'}</td>
+      <td class="py-2 pr-4 text-xs text-center text-slate-600">${era5}</td>
+      <td class="py-2 pr-4 text-center">${badge}</td>
+      <td class="py-2 text-xs text-right ${errColor}">${h.error != null ? (h.error > 0 ? '+' : '') + h.error + '°' : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <table class="w-full">
+      <thead>
+        <tr>
+          <th class="text-left text-xs text-slate-500 font-normal pb-2 pr-4">Date</th>
+          <th class="text-center text-xs text-slate-500 font-normal pb-2 pr-4">Bet On</th>
+          <th class="text-center text-xs text-slate-500 font-normal pb-2 pr-4">Actual (band)</th>
+          <th class="text-center text-xs text-slate-500 font-normal pb-2 pr-4">ERA5</th>
+          <th class="text-center text-xs text-slate-500 font-normal pb-2 pr-4">Result</th>
+          <th class="text-right text-xs text-slate-500 font-normal pb-2">Error</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+</script>
+</body>
+</html>
