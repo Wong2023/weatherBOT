@@ -117,7 +117,9 @@ app.get('/api/data', (req, res) => {
   }
   const history = observed.slice(-30).map(o => {
     const pred = latestByDate[o.date];
-    const predicted = pred?.decision?.forecastRounded ?? null;
+    // Use the band actually bet/displayed (betOn = argmax). Fall back to
+    // forecastRounded for older logs predating the argmax/forecast split.
+    const predicted = pred?.decision?.forecastArgmax ?? pred?.decision?.forecastRounded ?? null;
     const actual = o.maxTempBand ?? o.maxTemp ?? null;
     const err = predicted != null && actual != null ? predicted - actual : null;
     return {

@@ -196,13 +196,14 @@ function selectBand(pred, method) {
   }
 
   if (method === 'forecast') {
-    // forecastRounded = Math.round(consensus mean) — set correctly in predict.js
+    // forecastRounded = Math.round(consensus value) — set correctly in predict.js
     const band = d.forecastRounded;
     if (band == null) return null;
     const p = dist[String(band)] ?? 0;
-    const c = typeof d.marketPrice === 'number' ? d.marketPrice : marketPrice(band);
+    // Price MUST be looked up for THIS band — d.marketPrice is the argmax band's price,
+    // which differs when forecast ≠ argmax. Using it would price a different basket.
+    const c = marketPrice(band);
     if (c == null) return null;
-    // find betOn name from outcomes for this band
     const o = outcomes.find(o => parseInt(o.name) === band);
     return { band, betOn: o?.name ?? `${band}°C`, p, c, edge: +(p - c).toFixed(3) };
   }

@@ -88,16 +88,20 @@ async function main() {
     const actualBand = observedBand[date];                 // integer band — for hit/payout
     const actualPrecise = observedPrecise[date] ?? actualBand; // ERA5 if available — for bias
     const forecastRaw = pred.decision?.forecastRaw ?? pred.ensembleForecast?.consensus?.consensusValue ?? pred.ensembleForecast?.stats?.mean;
-    const forecastRounded = pred.decision?.forecastRounded ?? (forecastRaw != null ? Math.round(forecastRaw) : null);
-    const betOn = pred.decision?.betOn ?? (forecastRounded != null ? `${forecastRounded}°C` : null);
-    if (forecastRounded == null) continue;
+    // betBand = the band we actually display/bet (betOn = argmax of model votes).
+    // Falls back to forecastRounded for older logs that predate the argmax/forecast split.
+    const betBand = pred.decision?.forecastArgmax
+      ?? pred.decision?.forecastRounded
+      ?? (forecastRaw != null ? Math.round(forecastRaw) : null);
+    const betOn = pred.decision?.betOn ?? (betBand != null ? `${betBand}°C` : null);
+    if (betBand == null) continue;
 
-    // Did the bet win? Decided by the Polymarket band (integer).
-    const hit = Math.round(actualBand) === forecastRounded;
+    // Did the bet win? Decided by the Polymarket band (integer) vs the band we bet on.
+    const hit = Math.round(actualBand) === betBand;
     // Signed error for bias/MAE — measured against precise ERA5 when we have it.
     const err = Number((actualPrecise - forecastRaw).toFixed(2));
     const preciseUsed = date in observedPrecise;
-    results.push({ date, forecastRaw, forecastRounded, betOn, actual: actualBand, actualPrecise, preciseUsed, hit, err });
+    results.push({ date, forecastRaw, forecastRounded: betBand, betOn, actual: actualBand, actualPrecise, preciseUsed, hit, err });
   }
 
   // Sort newest first

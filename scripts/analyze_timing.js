@@ -118,7 +118,11 @@ async function main() {
     if (actual === undefined) continue;
     const forecastRaw = p.decision?.forecastRaw ?? p.ensembleForecast?.consensus?.consensusValue;
     if (forecastRaw == null) continue;
-    const forecastRounded = Math.round(forecastRaw);
+    // Measure the band we actually bet/display (betOn = argmax). Fall back to
+    // forecastRounded, then round(raw) for older logs predating the split.
+    const forecastRounded = p.decision?.forecastArgmax
+      ?? p.decision?.forecastRounded
+      ?? Math.round(forecastRaw);
     const hour = new Date(p.timestamp).getUTCHours();
     const offset = p.targetDayOffset ?? 1;
 
