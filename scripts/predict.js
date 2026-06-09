@@ -571,7 +571,7 @@ function normalizeGammaEvent(event) {
         ? JSON.parse(m.outcomePrices)
         : (m.outcomePrices ?? []);
       // Yes is index 0; groupItemTitle is cleanest: "19°C", "15°C or below", etc.
-      const name = m.groupItemTitle ?? m.question ?? '';
+      const name = (m.groupItemTitle ?? m.question ?? '').replace(/Â°/g, '°');
       const probability = rawPrices[0] != null ? Number(rawPrices[0]) : null;
       return { id: String(m.id), name, probability };
     })
@@ -689,18 +689,19 @@ async function runPredictionCycle() {
     // Probability distribution over bands + value (edge) vs the market.
     const distribution = computeBandDistribution(ensembleForecast.models);
 
-    // PRIMARY band selection: argmax of distribution = band with the most model votes.
-    // This directly implements "bet on what the majority of models point to".
-    // Falls back to round(consensus) only if distribution is empty.
+    // PRIMARY band for betOn display: argmax of distribution = band with most model votes.
     const argmaxBand = Object.keys(distribution).length
       ? Number(Object.entries(distribution).sort((a, b) => b[1] - a[1])[0][0])
       : Math.round(rawForecast);
-    const roundedForecast = argmaxBand;
 
-    // Find the matching market outcome for our chosen band.
+    // forecastRounded = Math.round(consensus mean) — used by paper_bet "forecast" strategy.
+    // SEPARATE from argmaxBand so the two band methods are truly different in paper_bet.
+    const forecastRounded = Math.round(rawForecast);
+
+    // Find the matching market outcome for betOn (uses argmax — most model votes).
     const targetOutcome = polymarketData.outcomes.find(o => {
       const t = parseTemperatureFromOutcome(o.name);
-      return t !== null && Math.round(t) === roundedForecast;
+      return t !== null && Math.round(t) === argmaxBand;
     }) ?? null;
 
     const valueTable = computeValueTable(polymarketData.outcomes, distribution);
@@ -709,8 +710,9 @@ async function runPredictionCycle() {
 
     result.decision = {
       forecastRaw: Number(rawForecast.toFixed(2)),
-      forecastRounded: roundedForecast,
-      betOn: targetOutcome?.name ?? `${roundedForecast}°C`,
+      forecastRounded,          // Math.round(consensus mean) — for "forecast" band strategy
+      forecastArgmax: argmaxBand, // argmax(distribution) — for "argmax" band strategy
+      betOn: targetOutcome?.name ?? `${argmaxBand}°C`,  // display uses argmax
       marketPrice: targetOutcome?.probability != null
         ? Number(Number(targetOutcome.probability).toFixed(3))
         : null,

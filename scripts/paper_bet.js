@@ -196,25 +196,33 @@ function selectBand(pred, method) {
   }
 
   if (method === 'forecast') {
+    // forecastRounded = Math.round(consensus mean) — set correctly in predict.js
     const band = d.forecastRounded;
     if (band == null) return null;
-    const p = dist[band] ?? 0;
+    const p = dist[String(band)] ?? 0;
     const c = typeof d.marketPrice === 'number' ? d.marketPrice : marketPrice(band);
     if (c == null) return null;
-    return { band, betOn: d.betOn ?? `${band}°C`, p, c, edge: +(p - c).toFixed(3) };
+    // find betOn name from outcomes for this band
+    const o = outcomes.find(o => parseInt(o.name) === band);
+    return { band, betOn: o?.name ?? `${band}°C`, p, c, edge: +(p - c).toFixed(3) };
   }
 
   if (method === 'argmax') {
-    const entries = Object.entries(dist).filter(([, v]) => v > 0);
-    if (!entries.length) return null;
-    const [bandStr] = entries.sort((a, b) => b[1] - a[1])[0];
-    const band = parseInt(bandStr);
-    if (isNaN(band)) return null;
-    const p = dist[bandStr];
-    const c = marketPrice(band);
+    // argmax(distribution) — band with most model votes (d.forecastArgmax if available,
+    // otherwise recompute from distribution directly)
+    const argmaxBand = d.forecastArgmax != null
+      ? d.forecastArgmax
+      : (() => {
+          const entries = Object.entries(dist).filter(([, v]) => v > 0);
+          if (!entries.length) return null;
+          return parseInt(entries.sort((a, b) => b[1] - a[1])[0][0]);
+        })();
+    if (argmaxBand == null) return null;
+    const p = dist[String(argmaxBand)] ?? 0;
+    const c = marketPrice(argmaxBand);
     if (c == null) return null;
-    const o = outcomes.find(o => parseInt(o.name) === band);
-    return { band, betOn: o?.name ?? `${band}°C`, p, c, edge: +(p - c).toFixed(3) };
+    const o = outcomes.find(o => parseInt(o.name) === argmaxBand);
+    return { band: argmaxBand, betOn: o?.name ?? `${argmaxBand}°C`, p, c, edge: +(p - c).toFixed(3) };
   }
 
   if (method === 'edge') {

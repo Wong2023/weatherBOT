@@ -22,8 +22,8 @@ dotenv.config();
 const LOG_DIR = path.resolve(process.cwd(), 'logs');
 const OBSERVED_LOG_PATH = path.resolve(LOG_DIR, process.env.OBSERVED_LOG_PATH || 'observed-london.ndjson');
 
-const WEATHER_LATITUDE = 51.5074;
-const WEATHER_LONGITUDE = -0.1278;
+const WEATHER_LATITUDE = 51.5048;
+const WEATHER_LONGITUDE = 0.0495;
 const GAMMA_BASE = 'https://gamma-api.polymarket.com';
 const POLYMARKET_BASE_URL = process.env.POLYMARKET_BASE_URL || 'https://polymarket.com';
 const EVENT_SLUG_PREFIX = 'highest-temperature-in-london-on-';
