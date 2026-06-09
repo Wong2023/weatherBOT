@@ -1,76 +1,118 @@
 /**
- * paper_bet.js — Paper-trading money management (bankroll + Kelly sizing).
+ * paper_bet.js — Paper-trading, 9 strategies (3×3 factorial design).
  *
- * Runs once daily (≈13:00 MSK / 10:00 UTC). For each of 3 sizing strategies it
- * keeps a virtual bankroll and:
- *   1. Settles yesterday's open bet against the resolved Polymarket band.
- *   2. Picks today's band = our consensus/cluster band (decision.forecastRounded).
- *   3. Sizes a stake from that strategy's bank and "places" a paper bet.
- *   4. Logs everything and sends a Telegram summary.
+ * Runs daily at 10:10 UTC (13:10 MSK). For each strategy:
+ *   1. Settles yesterday's open bet against resolved Polymarket band.
+ *   2. Picks today's band via that strategy's selection method.
+ *   3. Sizes the stake via that strategy's sizing method.
+ *   4. Logs to bank.json + paper-bets.ndjson, sends Telegram summary.
  *
- * NO REAL MONEY. This is to validate which sizing strategy actually grows the
- * bank over ~2 weeks before risking anything real.
+ * ── Factorial design 3×3 ────────────────────────────────────────────────────
  *
- * Strategies (all share the same band pick + skip rules; they differ only in stake size):
- *   - kelly_pure      : ¼ Kelly on raw edge.            f = 0.25·(p−c)/(1−c)
- *   - kelly_shrunk    : ¼ Kelly after shrinking our P halfway to the market (recommended,
- *                       conservative while the model is uncalibrated). p_eff = ½p+½c
- *   - market_weighted : user's rule — stake grows with the market price (more market
- *                       agreement ⇒ bigger), cheap bands ⇒ smaller. f = 0.15·c
+ * BAND SELECTION (what to bet on):
+ *   forecast  — round(consensusValue). Current baseline.
+ *   argmax    — band with most model votes (argmax of distribution).
+ *   edge      — band with highest positive edge vs market price.
  *
- * Shared rules: only bet when edge = p−c > 0 AND market price c ≤ 0.60 (above that the
- * payout is too small — "не интересно"); hard cap 10% of bank per bet.
+ * SIZING (how much to bet):
+ *   kelly_pure      — ¼ Kelly on raw edge.       f = 0.25·(p−c)/(1−c)
+ *   kelly_shrunk    — ¼ Kelly, P shrunk halfway to market. p_eff = ½p+½c
+ *   market_weighted — stake ∝ market price.       f = 0.15·c
+ *
+ * STRATEGIES (9 total, naming: <sizing>_<band>):
+ *   kelly_pure      = forecast + kelly_pure      (original, backward-compat)
+ *   kelly_shrunk    = forecast + kelly_shrunk     (original, backward-compat)
+ *   market_weighted = forecast + market_weighted  (original, backward-compat)
+ *   argmax_pure     = argmax   + kelly_pure
+ *   argmax_shrunk   = argmax   + kelly_shrunk
+ *   argmax_mkt      = argmax   + market_weighted
+ *   edge_pure       = edge     + kelly_pure
+ *   edge_shrunk     = edge     + kelly_shrunk
+ *   edge_mkt        = edge     + market_weighted
+ *
+ * After 14 days, analysis:
+ *   Sizing winner  = avg ROI across 3 band methods per sizing
+ *   Band winner    = avg ROI across 3 sizing methods per band selection
+ *   Best combo     = top single strategy by ROI + Sharpe
  *
  * Usage: node scripts/paper_bet.js [--date=YYYY-MM-DD] [--dry-run]
  */
 
-const fs = require('fs/promises');
+'use strict';
+const fs   = require('fs/promises');
 const path = require('path');
-const dotenv = require('dotenv');
-dotenv.config();
+require('dotenv').config();
 
 const fetch = global.fetch;
-const LOG_DIR = path.resolve(process.cwd(), 'logs');
+const LOG_DIR        = path.resolve(process.cwd(), 'logs');
 const PREDICTION_LOG = path.resolve(LOG_DIR, 'predictions.ndjson');
-const HOURLY_LOG = path.resolve(LOG_DIR, 'predictions-hourly.ndjson');
-const OBSERVED_LOG = path.resolve(LOG_DIR, process.env.OBSERVED_LOG_PATH || 'observed-london.ndjson');
-const BANK_PATH = path.resolve(LOG_DIR, 'bank.json');
-const PAPER_BETS_LOG = path.resolve(LOG_DIR, 'paper-bets.ndjson');
+const HOURLY_LOG     = path.resolve(LOG_DIR, 'predictions-hourly.ndjson');
+const OBSERVED_LOG   = path.resolve(LOG_DIR, process.env.OBSERVED_LOG_PATH || 'observed-london.ndjson');
+const BANK_PATH      = path.resolve(LOG_DIR, 'bank.json');
+const BETS_LOG       = path.resolve(LOG_DIR, 'paper-bets.ndjson');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const TELEGRAM_CHAT_ID   = process.env.TELEGRAM_CHAT_ID;
 
-// ── Tunables ────────────────────────────────────────────────────────────────
-const START_BANK = 100;
-const KELLY_FRACTION = 0.25;     // quarter Kelly
-const SHRINK_LAMBDA = 0.5;       // trust in our own P vs market (raise toward 1 as we calibrate)
-const MAX_STAKE_FRAC = 0.10;     // never risk more than 10% of bank on one bet
-const MAX_MARKET_PRICE = 0.60;   // skip if our band already priced above this (low payout)
-const MIN_MARKET_PRICE = 0.02;   // skip if our band priced below this — Polymarket placeholder/illiquid
-const MARKET_WEIGHTED_K = 0.15;  // slope for the market_weighted strategy
+// ── Tunables ──────────────────────────────────────────────────────────────────
+const START_BANK        = 100;
+const KELLY_FRACTION    = 0.25;
+const SHRINK_LAMBDA     = 0.5;
+const MAX_STAKE_FRAC    = 0.10;
+const MAX_MARKET_PRICE  = 0.60;
+const MIN_MARKET_PRICE  = 0.02;
+const MARKET_WEIGHTED_K = 0.15;
 
-const STRATEGIES = ['kelly_pure', 'kelly_shrunk', 'market_weighted'];
-const STRATEGY_LABEL = {
-  kelly_pure: '¼ Kelly',
-  kelly_shrunk: '¼ Kelly + ужатие в рынок',
-  market_weighted: 'по рынку (∝ цена)'
+// ── Strategy definitions ──────────────────────────────────────────────────────
+// Each strategy = { band: 'forecast'|'argmax'|'edge', sizing: 'kelly_pure'|'kelly_shrunk'|'market_weighted' }
+const STRATEGY_CONFIG = {
+  // Group: forecast band
+  kelly_pure:      { band: 'forecast', sizing: 'kelly_pure' },
+  kelly_shrunk:    { band: 'forecast', sizing: 'kelly_shrunk' },
+  market_weighted: { band: 'forecast', sizing: 'market_weighted' },
+  // Group: argmax(model distribution) band
+  argmax_pure:     { band: 'argmax',   sizing: 'kelly_pure' },
+  argmax_shrunk:   { band: 'argmax',   sizing: 'kelly_shrunk' },
+  argmax_mkt:      { band: 'argmax',   sizing: 'market_weighted' },
+  // Group: best edge vs market
+  edge_pure:       { band: 'edge',     sizing: 'kelly_pure' },
+  edge_shrunk:     { band: 'edge',     sizing: 'kelly_shrunk' },
+  edge_mkt:        { band: 'edge',     sizing: 'market_weighted' },
 };
 
-// ── Args ────────────────────────────────────────────────────────────────────
+const STRATEGIES = Object.keys(STRATEGY_CONFIG);
+
+const STRATEGY_LABEL = {
+  kelly_pure:      'forecast + ¼Kelly',
+  kelly_shrunk:    'forecast + shrunk',
+  market_weighted: 'forecast + mkt∝',
+  argmax_pure:     'argmax + ¼Kelly',
+  argmax_shrunk:   'argmax + shrunk',
+  argmax_mkt:      'argmax + mkt∝',
+  edge_pure:       'best-edge + ¼Kelly',
+  edge_shrunk:     'best-edge + shrunk',
+  edge_mkt:        'best-edge + mkt∝',
+};
+
+const BAND_GROUP = {
+  forecast: 'Forecast band (round consensus)',
+  argmax:   'Argmax band (most model votes)',
+  edge:     'Best-edge band (max edge vs market)',
+};
+
+// ── Args ──────────────────────────────────────────────────────────────────────
 function parseArgs() {
   const a = Object.fromEntries(process.argv.slice(2).map(s => {
-    const [k, v] = s.split('=');
-    return [k.replace(/^--?/, ''), v];
+    const [k, v] = s.replace(/^--?/, '').split('=');
+    return [k, v];
   }));
-  return { date: a.date, dryRun: 'dry-run' in a || a['dry-run'] === 'true' };
+  return { date: a.date, dryRun: 'dry-run' in a };
 }
 
-function todayUTC() {
-  return new Date().toISOString().slice(0, 10);
-}
+function todayUTC() { return new Date().toISOString().slice(0, 10); }
 
-// ── IO helpers ──────────────────────────────────────────────────────────────
-async function readJsonLines(filePath) {
+// ── IO ────────────────────────────────────────────────────────────────────────
+async function readNdjson(filePath) {
   try {
     const text = await fs.readFile(filePath, 'utf8');
     return text.split(/\r?\n/).filter(Boolean).map(l => {
@@ -83,17 +125,20 @@ async function readJsonLines(filePath) {
 }
 
 async function loadBank() {
+  let bank;
   try {
     const raw = await fs.readFile(BANK_PATH, 'utf8');
     const parsed = JSON.parse(raw);
-    if (parsed && parsed.strategies) return parsed;
+    if (parsed?.strategies) bank = parsed;
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
   }
-  // Fresh bank.
-  const strategies = {};
-  for (const s of STRATEGIES) strategies[s] = { bank: START_BANK, open: null };
-  return { startedAt: todayUTC(), strategies };
+  if (!bank) bank = { startedAt: todayUTC(), strategies: {} };
+  // Add missing strategies (migration-safe: new ones start fresh at $100)
+  for (const s of STRATEGIES) {
+    if (!bank.strategies[s]) bank.strategies[s] = { bank: START_BANK, open: null };
+  }
+  return bank;
 }
 
 async function saveBank(bank, dryRun) {
@@ -102,10 +147,10 @@ async function saveBank(bank, dryRun) {
   await fs.writeFile(BANK_PATH, JSON.stringify(bank, null, 2), 'utf8');
 }
 
-async function appendPaperBet(entry, dryRun) {
+async function appendBet(entry, dryRun) {
   if (dryRun) return;
   await fs.mkdir(LOG_DIR, { recursive: true });
-  await fs.appendFile(PAPER_BETS_LOG, `${JSON.stringify(entry)}\n`, 'utf8');
+  await fs.appendFile(BETS_LOG, JSON.stringify(entry) + '\n', 'utf8');
 }
 
 async function sendTelegram(text) {
@@ -114,187 +159,228 @@ async function sendTelegram(text) {
     await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' })
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' }),
     });
-  } catch (err) { console.warn('Telegram failed:', err.message); }
+  } catch (err) { console.warn('Telegram error:', err.message); }
 }
 
-// ── Data extraction ─────────────────────────────────────────────────────────
-// Latest prediction record for a target date (prefer the freshest by timestamp).
-function latestPredictionForDate(records, date) {
-  const matching = records.filter(r => r.targetDate === date && r.decision && r.timestamp);
-  if (!matching.length) return null;
-  matching.sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
-  return matching[0];
+// ── Data helpers ──────────────────────────────────────────────────────────────
+function latestPred(records, date) {
+  const m = records.filter(r => r.targetDate === date && r.decision && r.timestamp);
+  if (!m.length) return null;
+  return m.sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))[0];
 }
 
-// Observed band (integer Polymarket truth) for a date.
-function observedBandFor(observations, date) {
+function observedBand(observations, date) {
   for (const o of observations) {
     if (o.date !== date) continue;
     if (typeof o.maxTempBand === 'number') return o.maxTempBand;
-    if (typeof o.maxTemp === 'number') return o.maxTemp;
+    if (typeof o.maxTemp     === 'number') return o.maxTemp;
   }
   return null;
 }
 
-// Pull the betting signal out of a prediction record.
-// band = consensus/cluster band; p = our probability for that band; c = its market price.
-function extractSignal(pred) {
+// ── Band selection ────────────────────────────────────────────────────────────
+// Returns { band, betOn, p, c, edge } or null.
+function selectBand(pred, method) {
   const d = pred.decision;
-  const band = d.forecastRounded;
-  if (band == null) return null;
-  const dist = d.distribution || {};
-  const p = typeof dist[band] === 'number' ? dist[band] : 0;
-  const c = typeof d.marketPrice === 'number' ? d.marketPrice : null;
-  if (c == null) return null; // can't price our band → no bet today
-  return { band, p, c, edge: Number((p - c).toFixed(3)), betOn: d.betOn };
-}
+  if (!d) return null;
+  const dist     = d.distribution || {};
+  const value    = d.value        || [];
+  const outcomes = pred.market?.outcomes || [];
 
-// ── Sizing ──────────────────────────────────────────────────────────────────
-// Returns stake fraction of bank (0..MAX_STAKE_FRAC) for a strategy.
-function stakeFraction(strategy, p, c) {
-  const edge = p - c;
-  // Shared skip rules.
-  if (edge <= 0) return 0;
-  if (c > MAX_MARKET_PRICE) return 0;
-  if (c < MIN_MARKET_PRICE) return 0; // illiquid/placeholder price — don't trust the edge
-
-  let f = 0;
-  if (strategy === 'kelly_pure') {
-    f = KELLY_FRACTION * (edge / (1 - c));
-  } else if (strategy === 'kelly_shrunk') {
-    const pEff = SHRINK_LAMBDA * p + (1 - SHRINK_LAMBDA) * c;
-    const edgeEff = pEff - c;
-    if (edgeEff <= 0) return 0;
-    f = KELLY_FRACTION * (edgeEff / (1 - c));
-  } else if (strategy === 'market_weighted') {
-    f = MARKET_WEIGHTED_K * c; // grows with market price; cheap band ⇒ smaller
+  // Look up market price for a given integer band
+  function marketPrice(band) {
+    const o = outcomes.find(o => parseInt(o.name) === band);
+    return o?.price ?? null;
   }
-  if (!Number.isFinite(f) || f <= 0) return 0;
-  return Math.min(f, MAX_STAKE_FRAC);
+
+  if (method === 'forecast') {
+    const band = d.forecastRounded;
+    if (band == null) return null;
+    const p = dist[band] ?? 0;
+    const c = typeof d.marketPrice === 'number' ? d.marketPrice : marketPrice(band);
+    if (c == null) return null;
+    return { band, betOn: d.betOn ?? `${band}°C`, p, c, edge: +(p - c).toFixed(3) };
+  }
+
+  if (method === 'argmax') {
+    const entries = Object.entries(dist).filter(([, v]) => v > 0);
+    if (!entries.length) return null;
+    const [bandStr] = entries.sort((a, b) => b[1] - a[1])[0];
+    const band = parseInt(bandStr);
+    if (isNaN(band)) return null;
+    const p = dist[bandStr];
+    const c = marketPrice(band);
+    if (c == null) return null;
+    const o = outcomes.find(o => parseInt(o.name) === band);
+    return { band, betOn: o?.name ?? `${band}°C`, p, c, edge: +(p - c).toFixed(3) };
+  }
+
+  if (method === 'edge') {
+    const candidates = value.filter(v =>
+      v.price >= MIN_MARKET_PRICE && v.price <= MAX_MARKET_PRICE && v.edge > 0
+    );
+    if (!candidates.length) return null;
+    const top = candidates[0];
+    const band = parseInt(top.name);
+    if (isNaN(band)) return null;
+    return { band, betOn: top.name, p: top.ourP, c: top.price, edge: +top.edge.toFixed(3) };
+  }
+
+  return null;
 }
 
-// Settle a single open bet against the observed band. Returns {won, delta}.
-function settleBet(open, observedBand) {
-  const won = Math.round(observedBand) === open.band;
-  // Buy at price c: stake S buys S/c shares paying 1 each on win.
-  const delta = won ? open.stake * (1 - open.price) / open.price : -open.stake;
-  return { won, delta: Number(delta.toFixed(2)) };
+// ── Stake sizing ──────────────────────────────────────────────────────────────
+function stakeF(method, p, c) {
+  const edge = p - c;
+  if (edge <= 0 || c > MAX_MARKET_PRICE || c < MIN_MARKET_PRICE) return 0;
+  let f = 0;
+  if (method === 'kelly_pure') {
+    f = KELLY_FRACTION * (edge / (1 - c));
+  } else if (method === 'kelly_shrunk') {
+    const pEff = SHRINK_LAMBDA * p + (1 - SHRINK_LAMBDA) * c;
+    const eEff = pEff - c;
+    if (eEff <= 0) return 0;
+    f = KELLY_FRACTION * (eEff / (1 - c));
+  } else if (method === 'market_weighted') {
+    f = MARKET_WEIGHTED_K * c;
+  }
+  return Number.isFinite(f) && f > 0 ? Math.min(f, MAX_STAKE_FRAC) : 0;
 }
 
-// ── Main ────────────────────────────────────────────────────────────────────
+// ── Settlement ────────────────────────────────────────────────────────────────
+function settle(open, obs) {
+  const won   = Math.round(obs) === open.band;
+  const delta = won ? +(open.stake * (1 - open.price) / open.price).toFixed(2) : -open.stake;
+  return { won, delta };
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
   const { date: dateArg, dryRun } = parseArgs();
   const today = dateArg || todayUTC();
 
-  const [mainPreds, hourlyPreds, observations] = await Promise.all([
-    readJsonLines(PREDICTION_LOG),
-    readJsonLines(HOURLY_LOG),
-    readJsonLines(OBSERVED_LOG)
+  const [mainPreds, hourlyPreds, obs] = await Promise.all([
+    readNdjson(PREDICTION_LOG),
+    readNdjson(HOURLY_LOG),
+    readNdjson(OBSERVED_LOG),
   ]);
   const allPreds = [...mainPreds, ...hourlyPreds];
+  const pred     = latestPred(allPreds, today);
+  const bank     = await loadBank();
 
-  const bank = await loadBank();
-
-  // ── 1. Settle any open bets that have now resolved ──────────────────────────
+  // 1. Settle
   const settlements = [];
   for (const s of STRATEGIES) {
-    const st = bank.strategies[s] ?? (bank.strategies[s] = { bank: START_BANK, open: null });
+    const st = bank.strategies[s];
     if (!st.open) continue;
-    const obs = observedBandFor(observations, st.open.targetDate);
-    if (obs == null) continue; // not resolved yet — leave open
-    const { won, delta } = settleBet(st.open, obs);
-    st.bank = Number((st.bank + delta).toFixed(2));
-    const record = {
-      type: 'settle', strategy: s, date: st.open.targetDate,
-      band: st.open.band, stake: st.open.stake, price: st.open.price,
-      observedBand: obs, won, delta, bankAfter: st.bank,
-      settledAt: new Date().toISOString()
+    const fact = observedBand(obs, st.open.targetDate);
+    if (fact == null) continue;
+    const { won, delta } = settle(st.open, fact);
+    st.bank = +((st.bank + delta).toFixed(2));
+    const rec = {
+      type: 'settle', strategy: s,
+      date: st.open.targetDate, band: st.open.band, betOn: st.open.betOn,
+      stake: st.open.stake, price: st.open.price,
+      observedBand: fact, won, delta, bankAfter: st.bank,
+      settledAt: new Date().toISOString(),
     };
-    settlements.push(record);
-    await appendPaperBet(record, dryRun);
+    settlements.push(rec);
+    await appendBet(rec, dryRun);
     st.open = null;
   }
 
-  // ── 2. Today's signal ───────────────────────────────────────────────────────
-  const pred = latestPredictionForDate(allPreds, today);
-  const signal = pred ? extractSignal(pred) : null;
-
-  // ── 3. Size + place today's paper bets ──────────────────────────────────────
+  // 2. Place
   const placements = [];
   for (const s of STRATEGIES) {
-    const st = bank.strategies[s];
-    if (st.open) continue; // safety: don't double-open (shouldn't happen after settle)
-    if (!signal) continue;
-    const frac = stakeFraction(s, signal.p, signal.c);
-    const stake = Number((st.bank * frac).toFixed(2));
-    if (stake <= 0) { placements.push({ strategy: s, skipped: true }); continue; }
+    const cfg = STRATEGY_CONFIG[s];
+    const st  = bank.strategies[s];
+    if (st.open) continue;
+
+    if (!pred) {
+      placements.push({ strategy: s, skipped: true, reason: 'no_forecast' });
+      continue;
+    }
+
+    const sig = selectBand(pred, cfg.band);
+    if (!sig || sig.edge <= 0 || sig.c > MAX_MARKET_PRICE || sig.c < MIN_MARKET_PRICE) {
+      placements.push({ strategy: s, skipped: true, reason: sig ? 'no_edge' : 'no_signal' });
+      continue;
+    }
+
+    const frac  = stakeF(cfg.sizing, sig.p, sig.c);
+    const stake = +((st.bank * frac).toFixed(2));
+    if (stake <= 0) {
+      placements.push({ strategy: s, skipped: true, reason: 'zero_stake' });
+      continue;
+    }
 
     st.open = {
-      targetDate: today, band: signal.band, betOn: signal.betOn,
-      stake, price: signal.c, ourP: signal.p, edge: signal.edge,
-      placedAt: new Date().toISOString()
+      targetDate: today, band: sig.band, betOn: sig.betOn,
+      stake, price: sig.c, ourP: sig.p, edge: sig.edge,
+      placedAt: new Date().toISOString(),
     };
-    const record = { type: 'place', strategy: s, ...st.open, bankBefore: st.bank };
-    placements.push({ strategy: s, stake, frac });
-    await appendPaperBet(record, dryRun);
+    await appendBet({ type: 'place', strategy: s, ...st.open, bankBefore: st.bank }, dryRun);
+    placements.push({ strategy: s, skipped: false, stake, frac, sig });
   }
 
   await saveBank(bank, dryRun);
-
-  // ── 4. Telegram summary ─────────────────────────────────────────────────────
-  await sendTelegram(buildMessage({ today, signal, settlements, placements, bank }));
-  console.log('paper_bet done.');
+  await sendTelegram(buildMessage({ today, settlements, placements, bank }));
+  console.log(`paper_bet done — ${today}${dryRun ? ' [DRY RUN]' : ''}`);
 }
 
-function pct(x) { return `${(x * 100).toFixed(0)}%`; }
+// ── Telegram ──────────────────────────────────────────────────────────────────
+function pct(x)   { return `${(x * 100).toFixed(0)}%`; }
 function money(x) { return `$${x.toFixed(2)}`; }
+function roiStr(b) {
+  const r = b - START_BANK;
+  return `${r >= 0 ? '+' : ''}${money(r)}`;
+}
 
-function buildMessage({ today, signal, settlements, placements, bank }) {
+function buildMessage({ today, settlements, placements, bank }) {
   let msg = `💵 <b>Paper-trading — ${today}</b>\n`;
 
+  // Settlements
   if (settlements.length) {
-    msg += `\n<b>Вчерашние ставки закрыты:</b>\n`;
+    msg += `\n<b>Закрыто вчера:</b>\n`;
     for (const s of settlements) {
-      const icon = s.won ? '✅' : '❌';
-      msg += `  ${icon} ${STRATEGY_LABEL[s.strategy]}: ${s.band}°C, факт ${s.observedBand}°C → ${s.delta >= 0 ? '+' : ''}${money(s.delta)}\n`;
+      msg += `  ${s.won ? '✅' : '❌'} [${STRATEGY_LABEL[s.strategy]}] ${s.betOn} · факт ${s.observedBand}°C · ${s.delta >= 0 ? '+' : ''}${money(s.delta)}\n`;
     }
   }
 
-  if (!signal) {
-    msg += `\n⚠️ Нет прогноза на сегодня — ставки не размещены.`;
-  } else {
-    msg += `\n<b>Сегодня:</b> банд <b>${signal.band}°C</b> | наша P ${pct(signal.p)} / рынок ${pct(signal.c)} / эдж ${signal.edge >= 0 ? '+' : ''}${pct(signal.edge)}\n`;
-    if (signal.edge <= 0) {
-      msg += `  → нет эджа, ставки не размещены.\n`;
-    } else if (signal.c > MAX_MARKET_PRICE) {
-      msg += `  → рынок уже >${pct(MAX_MARKET_PRICE)} — пропуск (низкая выплата).\n`;
-    } else if (signal.c < MIN_MARKET_PRICE) {
-      msg += `  → рынок не торгует эту корзину (цена <${pct(MIN_MARKET_PRICE)}) — пропуск.\n`;
-    } else {
-      msg += `\n<b>Размер ставки по стратегиям:</b>\n`;
-      for (const p of placements) {
-        const st = bank.strategies[p.strategy];
-        if (p.skipped || !st.open) {
-          msg += `  • ${STRATEGY_LABEL[p.strategy]}: пропуск\n`;
-        } else {
-          msg += `  • ${STRATEGY_LABEL[p.strategy]}: <b>${money(p.stake)}</b> (${pct(p.frac)} банка)\n`;
-        }
+  // Placements grouped by band method
+  const byBand = { forecast: [], argmax: [], edge: [] };
+  for (const p of placements) {
+    const g = STRATEGY_CONFIG[p.strategy].band;
+    byBand[g].push(p);
+  }
+
+  msg += `\n<b>Ставки сегодня:</b>\n`;
+  for (const [bandMethod, items] of Object.entries(byBand)) {
+    msg += `\n<i>📐 ${BAND_GROUP[bandMethod]}:</i>\n`;
+    for (const p of items) {
+      const sizingName = STRATEGY_CONFIG[p.strategy].sizing.replace('kelly_', '').replace('market_weighted', 'mkt∝');
+      if (p.skipped) {
+        msg += `  • ${sizingName}: пропуск\n`;
+      } else {
+        msg += `  • ${sizingName}: <b>${p.sig.betOn}</b> · ${money(p.stake)} (${pct(p.frac)}) · P ${pct(p.sig.p)} vs рынок ${pct(p.sig.c)} · эдж +${pct(p.sig.edge)}\n`;
       }
     }
   }
 
-  msg += `\n<b>Банк сейчас:</b>\n`;
-  for (const s of STRATEGIES) {
-    const b = bank.strategies[s].bank;
-    const sign = b >= START_BANK ? '+' : '';
-    msg += `  ${STRATEGY_LABEL[s]}: <b>${money(b)}</b> (${sign}${money(b - START_BANK)})\n`;
+  // Bank summary grouped by band method
+  msg += `\n<b>Банк ($ из ${START_BANK}):</b>\n`;
+  for (const [bandMethod, label] of Object.entries(BAND_GROUP)) {
+    const group = STRATEGIES.filter(s => STRATEGY_CONFIG[s].band === bandMethod);
+    msg += `<i>${label.split('(')[0].trim()}:</i>\n`;
+    for (const s of group) {
+      const b = bank.strategies[s].bank;
+      msg += `  ${STRATEGY_LABEL[s]}: <b>${money(b)}</b> (${roiStr(b)})\n`;
+    }
   }
+
   return msg;
 }
 
-main().catch(err => {
-  console.error('paper_bet failed:', err.message);
-  process.exit(1);
-});
+main().catch(err => { console.error('paper_bet failed:', err.message); process.exit(1); });

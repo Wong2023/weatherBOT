@@ -93,7 +93,7 @@ app.get('/api/data', (req, res) => {
   }
 
   // P&L history per strategy from settle records
-  const STRATEGIES = ['kelly_pure', 'kelly_shrunk', 'market_weighted'];
+  const STRATEGIES = ['kelly_pure','kelly_shrunk','market_weighted','argmax_pure','argmax_shrunk','argmax_mkt','edge_pure','edge_shrunk','edge_mkt'];
   const pnlHistory = {};
   for (const s of STRATEGIES) pnlHistory[s] = [];
   for (const bet of bets.filter(b => b.type === 'settle')) {
