@@ -75,15 +75,16 @@ function tick() {
     }
   }
 
-  // 2. Daily full run — 09:00 UTC, TARGET_DAY_OFFSET=0 (today's forecast, most accurate)
-  if (hour === 9 && min >= 0 && lastDailyDate !== today) {
+  // 2. Daily full run — 10:00 UTC (≈13:00 MSK): fetch observed + accuracy report + TODAY forecast → Telegram.
+  //    Moved from 09:00 UTC so the signal arrives together with paper-bet at 13:00 MSK.
+  if (hour === 10 && min >= 0 && lastDailyDate !== today) {
     lastDailyDate = today;
     run('Daily full run (fetch + report + predict TODAY)', SCRIPTS.dailyRun, [], { TARGET_DAY_OFFSET: '0' });
   }
 
-  // 3. Daily paper-bet signal — 10:05 UTC (≈13:00 MSK): settle + size + Telegram.
-  //    Runs at :05 so the 10:01 hourly today-forecast is already logged (freshest signal).
-  if (hour === 10 && min >= 5 && lastBetDate !== today) {
+  // 3. Daily paper-bet signal — 10:10 UTC (≈13:10 MSK): settle + size + Telegram.
+  //    Runs at :10 so the daily run above (fetch + predict) finishes first → freshest signal.
+  if (hour === 10 && min >= 10 && lastBetDate !== today) {
     lastBetDate = today;
     run('Daily paper-bet signal', SCRIPTS.paperBet);
   }
@@ -97,7 +98,7 @@ function tick() {
 
 // ── Startup ───────────────────────────────────────────────────────────────────
 log('weatherBOT scheduler started.');
-log('Jobs: hourly forecast tomorrow + today(≤17:00 MSK) | daily 09:00 UTC report | paper-bet 10:05 UTC | weekly timing Sunday 10:00 UTC');
+log('Jobs: hourly forecast tomorrow + today(≤17:00 MSK) | daily 10:00 UTC (13:00 MSK) report+bet | weekly timing Sunday 10:00 UTC');
 
 // Fire immediately on startup so we don't wait up to an hour for first run.
 run('Startup: initial hourly forecast (tomorrow)', SCRIPTS.predictSilent, ['--silent'], { TARGET_DAY_OFFSET: '1' });
