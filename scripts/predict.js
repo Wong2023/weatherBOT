@@ -407,21 +407,54 @@ function computeMarketExpectation(outcomes) {
   return weighted / totalProb;
 }
 
-// Probability distribution over integer bands, from the weighted model votes.
-// Each model contributes its normalizedWeight to the band it rounds to.
-// Returns { "16": 0.25, "17": 0.5, ... } normalized to sum ~1.
+// Predictive probability distribution over integer bands.
+// We fit a Gaussian to the weighted ensemble (μ = weighted mean, σ = weighted
+// std with a floor) and integrate it over each band's ±0.5°C interval. This is
+// the honest probability the day's max lands in a band — unlike raw vote-share,
+// which undercounts confidence (12 clustered models give the central band ~35%
+// when the true mass is closer to ~45%). SIGMA_FLOOR caps overconfidence: even
+// when all models agree, day-ahead forecasts carry irreducible ~0.6°C error.
+// TODO: replace fixed SIGMA_FLOOR with our own historical forecast RMSE once
+//       enough observed days accumulate (self-calibration).
+// Returns { "16": 0.18, "17": 0.46, ... } normalized to sum ~1.
+const SIGMA_FLOOR = 0.6;
+
+// Error function (Abramowitz & Stegun 7.1.26) → standard normal CDF, no deps.
+function erf(x) {
+  const sign = x < 0 ? -1 : 1;
+  const ax = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * ax);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t) * Math.exp(-ax * ax);
+  return sign * y;
+}
+function normalCdf(x, mu, sigma) {
+  return 0.5 * (1 + erf((x - mu) / (sigma * Math.SQRT2)));
+}
+
 function computeBandDistribution(models) {
-  const dist = {};
-  const n = models.length || 1;
-  let total = 0;
+  const pts = [];
   for (const m of models) {
     if (typeof m.maxTemp !== 'number' || Number.isNaN(m.maxTemp)) continue;
-    const band = Math.round(m.maxTemp);
-    // Use the model's weight, but fall back to uniform if it's missing OR zero
-    // (0 passes a `?? ` check, so guard explicitly to avoid an all-zero distribution).
-    const w = (typeof m.normalizedWeight === 'number' && m.normalizedWeight > 0) ? m.normalizedWeight : 1 / n;
-    dist[band] = (dist[band] ?? 0) + w;
-    total += w;
+    // Keep the model's weight, or mark for a uniform fallback if missing/zero.
+    const w = (typeof m.normalizedWeight === 'number' && m.normalizedWeight > 0) ? m.normalizedWeight : null;
+    pts.push({ t: m.maxTemp, w });
+  }
+  if (!pts.length) return {};
+  const n = pts.length;
+  for (const p of pts) if (p.w === null) p.w = 1 / n;
+  const wsum  = pts.reduce((a, p) => a + p.w, 0) || 1;
+  const mu    = pts.reduce((a, p) => a + p.w * p.t, 0) / wsum;
+  const varw  = pts.reduce((a, p) => a + p.w * (p.t - mu) ** 2, 0) / wsum;
+  const sigma = Math.max(Math.sqrt(Math.max(varw, 0)), SIGMA_FLOOR);
+
+  // Integrate the predictive normal over each integer band in μ ± 4σ.
+  const dist = {};
+  let total = 0;
+  const lo = Math.floor(mu - 4 * sigma);
+  const hi = Math.ceil(mu + 4 * sigma);
+  for (let b = lo; b <= hi; b++) {
+    const p = normalCdf(b + 0.5, mu, sigma) - normalCdf(b - 0.5, mu, sigma);
+    if (p > 0.0005) { dist[b] = p; total += p; }
   }
   if (total > 0) {
     for (const b of Object.keys(dist)) dist[b] = Number((dist[b] / total).toFixed(3));

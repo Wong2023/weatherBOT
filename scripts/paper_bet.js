@@ -15,9 +15,10 @@
  *   edge      — band with highest positive edge vs market price.
  *
  * SIZING (how much to bet):
- *   kelly_pure      — ¼ Kelly on raw edge.       f = 0.25·(p−c)/(1−c)
- *   kelly_shrunk    — ¼ Kelly, P shrunk halfway to market. p_eff = ½p+½c
+ *   kelly_pure      — ⅓ Kelly on raw edge.       f = 0.33·(p−c)/(1−c)
+ *   kelly_shrunk    — ⅓ Kelly, P shrunk halfway to market. p_eff = ½p+½c
  *   market_weighted — stake ∝ market price.       f = 0.15·c
+ * All stakes are floored at $1 (Polymarket minimum order).
  *
  * STRATEGIES (9 total, naming: <sizing>_<band>):
  *   kelly_pure      = forecast + kelly_pure      (original, backward-compat)
@@ -55,13 +56,19 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID   = process.env.TELEGRAM_CHAT_ID;
 
 // ── Tunables ──────────────────────────────────────────────────────────────────
-const START_BANK        = 100;
-const KELLY_FRACTION    = 0.25;
-const SHRINK_LAMBDA     = 0.5;
-const MAX_STAKE_FRAC    = 0.10;
-const MAX_MARKET_PRICE  = 0.60;
-const MIN_MARKET_PRICE  = 0.02;
-const MARKET_WEIGHTED_K = 0.15;
+const START_BANK         = 100;
+const KELLY_FRACTION      = 0.33;   // ⅓ Kelly — meatier than ¼ but still conservative
+const SHRINK_LAMBDA      = 0.5;
+const MAX_STAKE_FRAC     = 0.10;
+const MAX_MARKET_PRICE   = 0.60;   // above this the payoff is too thin to bother
+const MIN_MARKET_PRICE   = 0.09;   // below this it's an illiquid longshot — skip
+const MARKET_WEIGHTED_K  = 0.15;
+const MIN_STAKE_USD      = 1.00;   // Polymarket minimum order — can't bet less than $1
+// Conviction floor: when we bet our forecast band but the edge is ≤ 0 (market
+// prices it as high or higher than we do), Kelly is undefined → fall back to a
+// small flat stake. We still bet because the point forecast is our signal; the
+// stake is tiny so a mispriced conviction bet can't hurt much.
+const MIN_CONVICTION_FRAC = 0.01;
 
 // ── Strategy definitions ──────────────────────────────────────────────────────
 // Each strategy = { band: 'forecast'|'argmax'|'edge', sizing: 'kelly_pure'|'kelly_shrunk'|'market_weighted' }
@@ -106,7 +113,9 @@ function parseArgs() {
     const [k, v] = s.replace(/^--?/, '').split('=');
     return [k, v];
   }));
-  return { date: a.date, dryRun: 'dry-run' in a };
+  // --at=<ISO timestamp>: reconstruct the forecast state as of that moment
+  // (used by backfill to pin to the morning snapshot's prices, not the latest).
+  return { date: a.date, dryRun: 'dry-run' in a, at: a.at };
 }
 
 function todayUTC() { return new Date().toISOString().slice(0, 10); }
@@ -165,8 +174,10 @@ async function sendTelegram(text) {
 }
 
 // ── Data helpers ──────────────────────────────────────────────────────────────
-function latestPred(records, date) {
-  const m = records.filter(r => r.targetDate === date && r.decision && r.timestamp);
+function latestPred(records, date, at) {
+  let m = records.filter(r => r.targetDate === date && r.decision && r.timestamp);
+  // When pinning (--at), only consider snapshots taken at or before that instant.
+  if (at) m = m.filter(r => String(r.timestamp) <= at);
   if (!m.length) return null;
   return m.sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))[0];
 }
@@ -227,8 +238,11 @@ function selectBand(pred, method) {
   }
 
   if (method === 'edge') {
+    // Best edge available inside the tradable price window. We no longer require
+    // edge > 0: if nothing is positive we still take the least-bad basket so the
+    // strategy participates every day (value[] is pre-sorted by edge desc).
     const candidates = value.filter(v =>
-      v.price >= MIN_MARKET_PRICE && v.price <= MAX_MARKET_PRICE && v.edge > 0
+      v.price >= MIN_MARKET_PRICE && v.price <= MAX_MARKET_PRICE
     );
     if (!candidates.length) return null;
     const top = candidates[0];
@@ -241,17 +255,19 @@ function selectBand(pred, method) {
 }
 
 // ── Stake sizing ──────────────────────────────────────────────────────────────
+// Price window is enforced by the caller; here we only turn (p, c) into a stake
+// fraction. On non-positive edge the Kelly methods fall back to a flat conviction
+// floor instead of returning 0, so a forecast-band bet still gets placed.
 function stakeF(method, p, c) {
+  if (c > MAX_MARKET_PRICE || c < MIN_MARKET_PRICE) return 0;
   const edge = p - c;
-  if (edge <= 0 || c > MAX_MARKET_PRICE || c < MIN_MARKET_PRICE) return 0;
   let f = 0;
   if (method === 'kelly_pure') {
-    f = KELLY_FRACTION * (edge / (1 - c));
+    f = edge > 0 ? KELLY_FRACTION * (edge / (1 - c)) : MIN_CONVICTION_FRAC;
   } else if (method === 'kelly_shrunk') {
     const pEff = SHRINK_LAMBDA * p + (1 - SHRINK_LAMBDA) * c;
     const eEff = pEff - c;
-    if (eEff <= 0) return 0;
-    f = KELLY_FRACTION * (eEff / (1 - c));
+    f = eEff > 0 ? KELLY_FRACTION * (eEff / (1 - c)) : MIN_CONVICTION_FRAC;
   } else if (method === 'market_weighted') {
     f = MARKET_WEIGHTED_K * c;
   }
@@ -267,7 +283,7 @@ function settle(open, obs) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
-  const { date: dateArg, dryRun } = parseArgs();
+  const { date: dateArg, dryRun, at } = parseArgs();
   const today = dateArg || todayUTC();
 
   const [mainPreds, hourlyPreds, obs] = await Promise.all([
@@ -276,7 +292,7 @@ async function main() {
     readNdjson(OBSERVED_LOG),
   ]);
   const allPreds = [...mainPreds, ...hourlyPreds];
-  const pred     = latestPred(allPreds, today);
+  const pred     = latestPred(allPreds, today, at);
   const bank     = await loadBank();
 
   // 1. Settle
@@ -313,15 +329,25 @@ async function main() {
     }
 
     const sig = selectBand(pred, cfg.band);
-    if (!sig || sig.edge <= 0 || sig.c > MAX_MARKET_PRICE || sig.c < MIN_MARKET_PRICE) {
-      placements.push({ strategy: s, skipped: true, reason: sig ? 'no_edge' : 'no_signal' });
+    // Bet whenever the chosen basket sits inside the tradable price window
+    // [MIN, MAX]. We deliberately do NOT gate on edge sign anymore: the forecast
+    // itself is the signal, so we still bet (small) even on non-positive edge.
+    if (!sig) {
+      placements.push({ strategy: s, skipped: true, reason: 'no_signal' });
+      continue;
+    }
+    if (sig.c > MAX_MARKET_PRICE || sig.c < MIN_MARKET_PRICE) {
+      placements.push({ strategy: s, skipped: true, reason: 'out_of_price_band' });
       continue;
     }
 
-    const frac  = stakeF(cfg.sizing, sig.p, sig.c);
-    const stake = +((st.bank * frac).toFixed(2));
+    const frac = stakeF(cfg.sizing, sig.p, sig.c);
+    let stake  = +((st.bank * frac).toFixed(2));
+    // Polymarket won't accept orders under ~$1: round a tiny stake up to the
+    // floor, or skip if the bank can't even cover $1.
+    if (frac > 0 && stake < MIN_STAKE_USD) stake = st.bank >= MIN_STAKE_USD ? MIN_STAKE_USD : 0;
     if (stake <= 0) {
-      placements.push({ strategy: s, skipped: true, reason: 'zero_stake' });
+      placements.push({ strategy: s, skipped: true, reason: frac > 0 ? 'below_min_stake' : 'zero_stake' });
       continue;
     }
 
@@ -371,7 +397,13 @@ function buildMessage({ today, settlements, placements, bank }) {
     for (const p of items) {
       const sizingName = STRATEGY_CONFIG[p.strategy].sizing.replace('kelly_', '').replace('market_weighted', 'mkt∝');
       if (p.skipped) {
-        msg += `  • ${sizingName}: пропуск\n`;
+        const why = p.reason === 'out_of_price_band' ? 'цена вне 9–60%'
+                  : p.reason === 'no_signal'         ? 'нет сигнала'
+                  : p.reason === 'below_min_stake'   ? 'банк < $1'
+                  : p.reason === 'zero_stake'        ? 'ставка 0'
+                  : p.reason === 'no_forecast'       ? 'нет прогноза'
+                  : p.reason;
+        msg += `  • ${sizingName}: пропуск (${why})\n`;
       } else {
         msg += `  • ${sizingName}: <b>${p.sig.betOn}</b> · ${money(p.stake)} (${pct(p.frac)}) · P ${pct(p.sig.p)} vs рынок ${pct(p.sig.c)} · эдж +${pct(p.sig.edge)}\n`;
       }
