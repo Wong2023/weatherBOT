@@ -90,13 +90,13 @@ const STRATEGY_CONFIG = {
 const STRATEGIES = Object.keys(STRATEGY_CONFIG);
 
 const STRATEGY_LABEL = {
-  kelly_pure:      'forecast + ¼Kelly',
+  kelly_pure:      'forecast + ⅓Kelly',
   kelly_shrunk:    'forecast + shrunk',
   market_weighted: 'forecast + mkt∝',
-  argmax_pure:     'argmax + ¼Kelly',
+  argmax_pure:     'argmax + ⅓Kelly',
   argmax_shrunk:   'argmax + shrunk',
   argmax_mkt:      'argmax + mkt∝',
-  edge_pure:       'best-edge + ¼Kelly',
+  edge_pure:       'best-edge + ⅓Kelly',
   edge_shrunk:     'best-edge + shrunk',
   edge_mkt:        'best-edge + mkt∝',
 };
@@ -361,7 +361,13 @@ async function main() {
   }
 
   await saveBank(bank, dryRun);
-  await sendTelegram(buildMessage({ today, settlements, placements, bank }));
+  const message = buildMessage({ today, settlements, placements, bank });
+  if (dryRun) {
+    // Dry run → print to the terminal (strip HTML), don't post a fake summary to Telegram.
+    console.log('\n' + message.replace(/<[^>]+>/g, ''));
+  } else {
+    await sendTelegram(message);
+  }
   console.log(`paper_bet done — ${today}${dryRun ? ' [DRY RUN]' : ''}`);
 }
 
