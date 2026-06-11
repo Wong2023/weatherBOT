@@ -357,7 +357,10 @@ async function main() {
       placedAt: new Date().toISOString(),
     };
     await appendBet({ type: 'place', strategy: s, ...st.open, bankBefore: st.bank }, dryRun);
-    placements.push({ strategy: s, skipped: false, stake, frac, sig });
+    // Report the ACTUAL fraction of bank staked (after the $1 floor), not the
+    // raw Kelly fraction — otherwise a floored $1 bet misleadingly shows "0%".
+    const actualFrac = st.bank > 0 ? stake / st.bank : 0;
+    placements.push({ strategy: s, skipped: false, stake, frac: actualFrac, sig });
   }
 
   await saveBank(bank, dryRun);
