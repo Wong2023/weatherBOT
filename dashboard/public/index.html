@@ -93,8 +93,25 @@
     }
 
     /* Smooth page fade */
-    @keyframes fadein { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
-    .page.active { animation: fadein .2s ease; }
+    @keyframes fadein { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+    .page.active { animation: fadein .32s cubic-bezier(.16,1,.3,1); }
+
+    /* Staggered card entrance */
+    @keyframes cardIn { from{opacity:0;transform:translateY(14px) scale(.985)} to{opacity:1;transform:translateY(0) scale(1)} }
+    .stagger > * { animation: cardIn .4s cubic-bezier(.16,1,.3,1) backwards; }
+    .stagger > *:nth-child(1){animation-delay:.02s} .stagger > *:nth-child(2){animation-delay:.07s}
+    .stagger > *:nth-child(3){animation-delay:.12s} .stagger > *:nth-child(4){animation-delay:.17s}
+
+    /* Number count-up gets a subtle pop when it lands */
+    @keyframes pop { 0%{transform:scale(1)} 40%{transform:scale(1.06)} 100%{transform:scale(1)} }
+    .pop { animation: pop .35s ease; }
+
+    /* Glow pulse on the bet temperature */
+    @keyframes tempGlow { 0%,100%{filter:drop-shadow(0 0 8px rgba(96,165,250,.15))} 50%{filter:drop-shadow(0 0 18px rgba(96,165,250,.35))} }
+    .gradient-temp { animation: tempGlow 3.5s ease-in-out infinite; }
+
+    /* Nav active pill */
+    .nav-item.active { background: rgba(96,165,250,0.08); }
 
     /* Edge colors */
     .edge-up { color: #34d399; }
@@ -303,6 +320,27 @@ function confCls(l) {
   return { high:'badge-conf-high', medium:'badge-conf-medium', low:'badge-conf-low' }[l] || 'badge-conf-low';
 }
 
+// Animate a number from its current value to `to` over ~600ms (ease-out).
+// prefix/suffix wrap it (e.g. '$', '°'); `dec` = decimal places.
+function countUp(el, to, { prefix = '', suffix = '', dec = 0 } = {}) {
+  if (!el) return;
+  if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    el.textContent = prefix + to.toFixed(dec) + suffix; return;
+  }
+  const from = parseFloat(el.getAttribute('data-val')) || 0;
+  if (from === to) { el.textContent = prefix + to.toFixed(dec) + suffix; return; }
+  el.setAttribute('data-val', to);
+  const dur = 600, t0 = performance.now();
+  function step(now) {
+    const p = Math.min(1, (now - t0) / dur);
+    const e = 1 - Math.pow(1 - p, 3); // easeOutCubic
+    el.textContent = prefix + (from + (to - from) * e).toFixed(dec) + suffix;
+    if (p < 1) requestAnimationFrame(step);
+    else { el.textContent = prefix + to.toFixed(dec) + suffix; el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop'); }
+  }
+  requestAnimationFrame(step);
+}
+
 // ── FORECAST PAGE ──────────────────────────────────────────────────────────────
 function renderForecast() {
   renderFcCard('fc-today',    DATA.forecasts[0], 'TODAY');
@@ -455,7 +493,7 @@ function renderBank() {
         <span class="text-xs text-slate-600">${g.note}</span>
         <span class="ml-auto text-xs ${avgClr} font-semibold">avg ${avgRoi >= 0 ? '+' : ''}$${avgRoi}</span>
       </div>
-      <div class="grid grid-cols-3 gap-2">${cards}</div>
+      <div class="grid grid-cols-3 gap-2 stagger">${cards}</div>
     </div>`;
   }).join('');
 
@@ -567,12 +605,16 @@ function renderStats() {
     { l:'MAE',       v:s.mae!=null?s.mae+'°':'—', s:'mean abs err', c:'text-yellow-400', bg:'rgba(245,158,11,0.07)',  bd:'rgba(245,158,11,0.12)' },
     { l:'Bias ERA5', v:s.bias!=null?biasSign+s.bias+'°':'—', s:'+warm / −cold', c:biasCls, bg:'rgba(255,255,255,0.03)', bd:'rgba(255,255,255,0.06)' },
   ];
-  el.innerHTML = cards.map(c => `
+  el.innerHTML = cards.map((c, i) => `
     <div class="rounded-2xl p-4" style="background:${c.bg};border:1px solid ${c.bd}">
       <div class="text-xs text-slate-500 mb-1.5">${c.l}</div>
-      <div class="text-2xl font-bold ${c.c} tabular-nums">${c.v}</div>
+      <div class="text-2xl font-bold ${c.c} tabular-nums" id="stat-v-${i}" data-raw="${c.v}">${c.v}</div>
       <div class="text-xs text-slate-600 mt-1">${c.s}</div>
     </div>`).join('');
+  el.classList.add('stagger');
+  // Count-up the two integer-percent cards (exact / within ±1°).
+  countUp(document.getElementById('stat-v-0'), s.exactPct, { suffix: '%' });
+  countUp(document.getElementById('stat-v-1'), s.closePct, { suffix: '%' });
 }
 
 // ── HISTORY TABLE ──────────────────────────────────────────────────────────────
