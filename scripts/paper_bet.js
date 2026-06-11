@@ -15,8 +15,8 @@
  *   edge      — band with highest positive edge vs market price.
  *
  * SIZING (how much to bet):
- *   kelly_pure      — ⅓ Kelly on raw edge.       f = 0.33·(p−c)/(1−c)
- *   kelly_shrunk    — ⅓ Kelly, P shrunk halfway to market. p_eff = ½p+½c
+ *   kelly_pure      — ½ Kelly on raw edge.       f = 0.50·(p−c)/(1−c)
+ *   kelly_shrunk    — ½ Kelly, P shrunk halfway to market. p_eff = ½p+½c
  *   market_weighted — stake ∝ market price.       f = 0.15·c
  * All stakes are floored at $1 (Polymarket minimum order).
  *
@@ -57,7 +57,7 @@ const TELEGRAM_CHAT_ID   = process.env.TELEGRAM_CHAT_ID;
 
 // ── Tunables ──────────────────────────────────────────────────────────────────
 const START_BANK         = 100;
-const KELLY_FRACTION      = 0.33;   // ⅓ Kelly — meatier than ¼ but still conservative
+const KELLY_FRACTION      = 0.50;   // ½ Kelly — upper edge of sane; scales with signal
 const SHRINK_LAMBDA      = 0.5;
 const MAX_STAKE_FRAC     = 0.10;
 const MAX_MARKET_PRICE   = 0.60;   // above this the payoff is too thin to bother
@@ -90,13 +90,13 @@ const STRATEGY_CONFIG = {
 const STRATEGIES = Object.keys(STRATEGY_CONFIG);
 
 const STRATEGY_LABEL = {
-  kelly_pure:      'forecast + ⅓Kelly',
+  kelly_pure:      'forecast + ½Kelly',
   kelly_shrunk:    'forecast + shrunk',
   market_weighted: 'forecast + mkt∝',
-  argmax_pure:     'argmax + ⅓Kelly',
+  argmax_pure:     'argmax + ½Kelly',
   argmax_shrunk:   'argmax + shrunk',
   argmax_mkt:      'argmax + mkt∝',
-  edge_pure:       'best-edge + ⅓Kelly',
+  edge_pure:       'best-edge + ½Kelly',
   edge_shrunk:     'best-edge + shrunk',
   edge_mkt:        'best-edge + mkt∝',
 };
