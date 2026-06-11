@@ -122,26 +122,33 @@ app.get('/api/data', (req, res) => {
     const predicted = pred?.decision?.forecastArgmax ?? pred?.decision?.forecastRounded ?? null;
     const actual = o.maxTempBand ?? o.maxTemp ?? null;
     const err = predicted != null && actual != null ? predicted - actual : null;
+    // Continuous error for MAE/bias: raw consensus (sub-degree) vs ERA5 truth.
+    // This is the HONEST calibration signal; the band-vs-band err above is for
+    // hit/miss display only.
+    const rawForecast = pred?.decision?.forecastRaw ?? null;
+    const era5 = typeof o.maxTempEra5 === 'number' ? o.maxTempEra5 : null;
+    const rawErr = rawForecast != null && era5 != null ? rawForecast - era5 : null;
     return {
       date: o.date,
       predicted,
       betOn: pred?.decision?.betOn ?? null,
       actual,
-      actualEra5: o.maxTempEra5 ?? null,
+      actualEra5: era5,
       hit: err === 0,
       close: err != null && Math.abs(err) <= 1,
-      error: err != null ? parseFloat(err.toFixed(1)) : null
+      error: err != null ? parseFloat(err.toFixed(1)) : null,
+      rawErr: rawErr != null ? parseFloat(rawErr.toFixed(2)) : null
     };
   }).reverse();
 
   // Stats over available history
   const withData = history.filter(h => h.actual != null && h.predicted != null);
-  const errors = withData.map(h => h.error).filter(e => e != null);
-  const absErrors = errors.map(Math.abs);
   const exactHits = withData.filter(h => h.hit).length;
   const closeHits = withData.filter(h => h.close).length;
-  const mae = absErrors.length ? absErrors.reduce((a, b) => a + b, 0) / absErrors.length : null;
-  const bias = errors.length ? errors.reduce((a, b) => a + b, 0) / errors.length : null;
+  // MAE & bias from CONTINUOUS raw-vs-ERA5 error (true calibration), not band rounding.
+  const rawErrors = history.map(h => h.rawErr).filter(e => e != null);
+  const mae  = rawErrors.length ? rawErrors.reduce((a, b) => a + Math.abs(b), 0) / rawErrors.length : null;
+  const bias = rawErrors.length ? rawErrors.reduce((a, b) => a + b, 0) / rawErrors.length : null;
 
   res.json({
     updatedAt: new Date().toISOString(),

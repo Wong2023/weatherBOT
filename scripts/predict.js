@@ -274,8 +274,18 @@ async function loadObservedHistory() {
 
 function buildObservedMap(observedEntries) {
   return observedEntries.reduce((map, entry) => {
-    if (!entry?.date || typeof entry.maxTemp !== 'number') return map;
-    map[entry.date] = entry.maxTemp;
+    if (!entry?.date) return map;
+    // Two truths per day:
+    //   calib = precise ERA5 (sub-degree) when available, else the integer band —
+    //           used for model error/MAE/weights (continuous accuracy).
+    //   band  = Polymarket resolved band (integer) — used for hit-rate (did the
+    //           model land in the money basket?).
+    const band  = typeof entry.maxTempBand === 'number' ? entry.maxTempBand
+                : typeof entry.maxTemp     === 'number' ? entry.maxTemp : null;
+    const calib = typeof entry.maxTempEra5 === 'number' ? entry.maxTempEra5
+                : (typeof entry.maxTemp === 'number' ? entry.maxTemp : null);
+    if (calib === null && band === null) return map;
+    map[entry.date] = { calib, band, hasEra5: typeof entry.maxTempEra5 === 'number' };
     return map;
   }, {});
 }
@@ -289,16 +299,21 @@ function computeSourceErrorRecords(predictions, observedMap) {
   const recordsBySource = {};
   for (const record of sorted) {
     const actual = observedMap[record.targetDate];
-    if (actual === undefined) continue;
+    if (!actual || actual.calib == null) continue;
     const models = record?.ensembleForecast?.models ?? record?.models ?? [];
     for (const model of models) {
       if (typeof model.maxTemp !== 'number') continue;
       const label = model.label ?? model.source ?? 'unknown';
-      const diff = model.maxTemp - actual;
+      // Error in degrees vs the precise (ERA5) truth → drives weights/MAE/bias.
+      const diff = model.maxTemp - actual.calib;
+      // Hit = did the model's rounded band match the resolved Polymarket band?
+      // Tracked separately as a metric; does NOT feed the weight.
+      const hit = actual.band != null ? (Math.round(model.maxTemp) === Math.round(actual.band)) : null;
       recordsBySource[label] = recordsBySource[label] ?? [];
       recordsBySource[label].push({
         diff,
         abs: Math.abs(diff),
+        hit,
         timestamp: Date.parse(record.timestamp || record.targetDate || ''),
         date: record.targetDate
       });
@@ -327,9 +342,18 @@ function computeErrorStats(recordsBySource) {
     if (!windowed.length) continue;
     const rmse = Math.sqrt(windowed.reduce((acc, entry) => acc + entry.diff * entry.diff, 0) / windowed.length);
     const ema = computeEma(windowed, HISTORY_WEIGHT_ALPHA);
+    const mae = windowed.reduce((acc, entry) => acc + entry.abs, 0) / windowed.length;
+    const bias = windowed.reduce((acc, entry) => acc + entry.diff, 0) / windowed.length;
+    // Hit-rate over days where a Polymarket band was known (separate from weights).
+    const hitSamples = windowed.filter((e) => e.hit === true || e.hit === false);
+    const hits = hitSamples.filter((e) => e.hit === true).length;
     stats[label] = {
       rmse,
       ema,
+      mae: Number(mae.toFixed(3)),
+      bias: Number(bias.toFixed(3)),
+      hitRate: hitSamples.length ? Number((hits / hitSamples.length).toFixed(3)) : null,
+      hitSamples: hitSamples.length,
       lastError: windowed[windowed.length - 1].diff,
       samples: windowed.length
     };
@@ -347,6 +371,12 @@ function applyHistoricalWeights(models, errorStats) {
     return {
       ...model,
       metaError: metaError ? Number(metaError.toFixed(3)) : null,
+      // Surface per-model accuracy metrics for the dashboard (computed from ERA5
+      // truth + Polymarket band). These are DISPLAY only — weight uses metaError.
+      mae: stat?.mae ?? null,
+      bias: stat?.bias ?? null,
+      hitRate: stat?.hitRate ?? null,
+      hitSamples: stat?.hitSamples ?? 0,
       weight,
       history: stat
     };

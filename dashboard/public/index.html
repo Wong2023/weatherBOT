@@ -73,7 +73,15 @@
     .bar-fill { transition: width .6s cubic-bezier(.4,0,.2,1); }
 
     /* Table hover */
-    .trow:hover { background: rgba(255,255,255,0.025); }
+    .trow { transition: background .15s ease; }
+    .trow:hover { background: rgba(96,165,250,0.05); }
+
+    /* Nav button hover (desktop) */
+    .nav-item:not(.active):hover { color: #94a3b8; background: rgba(255,255,255,0.03); }
+
+    /* Card subtle lift on hover */
+    .card { transition: border-color .2s ease, box-shadow .2s ease; }
+    .card:hover { border-color: rgba(96,165,250,0.12); }
 
     /* Skeleton */
     @keyframes shimmer { 0%{background-position:-400px 0} 100%{background-position:400px 0} }
@@ -151,15 +159,15 @@
           <span class="text-xs text-slate-500 uppercase tracking-widest font-semibold">P&amp;L — Virtual $100 each</span>
           <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">
             <span class="text-slate-500 font-semibold">Forecast:</span>
-            <span class="flex items-center gap-1"><span class="w-4 h-0.5 rounded inline-block" style="background:#60a5fa"></span>¼Kelly</span>
+            <span class="flex items-center gap-1"><span class="w-4 h-0.5 rounded inline-block" style="background:#60a5fa"></span>½Kelly</span>
             <span class="flex items-center gap-1"><span class="w-4 h-0.5 rounded inline-block" style="background:#34d399"></span>Shrunk</span>
             <span class="flex items-center gap-1"><span class="w-4 h-0.5 rounded inline-block" style="background:#fb923c"></span>Mkt∝</span>
             <span class="text-slate-500 font-semibold ml-1">Argmax:</span>
-            <span class="flex items-center gap-1"><span class="w-4 h-0.5 rounded inline-block" style="background:#c084fc"></span>¼Kelly</span>
+            <span class="flex items-center gap-1"><span class="w-4 h-0.5 rounded inline-block" style="background:#c084fc"></span>½Kelly</span>
             <span class="flex items-center gap-1"><span class="w-4 h-0.5 rounded inline-block" style="background:#a78bfa"></span>Shrunk</span>
             <span class="flex items-center gap-1"><span class="w-4 h-0.5 rounded inline-block" style="background:#818cf8"></span>Mkt∝</span>
             <span class="text-slate-500 font-semibold ml-1">Edge:</span>
-            <span class="flex items-center gap-1"><span class="w-4 h-0.5 rounded inline-block" style="background:#f472b6"></span>¼Kelly</span>
+            <span class="flex items-center gap-1"><span class="w-4 h-0.5 rounded inline-block" style="background:#f472b6"></span>½Kelly</span>
             <span class="flex items-center gap-1"><span class="w-4 h-0.5 rounded inline-block" style="background:#fb7185"></span>Shrunk</span>
             <span class="flex items-center gap-1"><span class="w-4 h-0.5 rounded inline-block" style="background:#fda4af"></span>Mkt∝</span>
           </div>
@@ -403,7 +411,7 @@ const BAND_GROUPS = [
   { key: 'argmax',   label: 'Argmax band',    note: 'band with most model votes',      strategies: ['argmax_pure','argmax_shrunk','argmax_mkt'] },
   { key: 'edge',     label: 'Best-edge band', note: 'highest edge vs market price',    strategies: ['edge_pure','edge_shrunk','edge_mkt'] },
 ];
-const SIZING_LBL = { kelly_pure:'¼ Kelly', kelly_shrunk:'Shrunk', market_weighted:'Mkt∝', argmax_pure:'¼ Kelly', argmax_shrunk:'Shrunk', argmax_mkt:'Mkt∝', edge_pure:'¼ Kelly', edge_shrunk:'Shrunk', edge_mkt:'Mkt∝' };
+const SIZING_LBL = { kelly_pure:'½ Kelly', kelly_shrunk:'Shrunk', market_weighted:'Mkt∝', argmax_pure:'½ Kelly', argmax_shrunk:'Shrunk', argmax_mkt:'Mkt∝', edge_pure:'½ Kelly', edge_shrunk:'Shrunk', edge_mkt:'Mkt∝' };
 const S_CLR  = { kelly_pure:'#60a5fa', kelly_shrunk:'#34d399', market_weighted:'#fb923c', argmax_pure:'#c084fc', argmax_shrunk:'#a78bfa', argmax_mkt:'#818cf8', edge_pure:'#f472b6', edge_shrunk:'#fb7185', edge_mkt:'#fda4af' };
 const S_TCLR = { kelly_pure:'text-blue-400', kelly_shrunk:'text-emerald-400', market_weighted:'text-orange-400', argmax_pure:'text-purple-400', argmax_shrunk:'text-violet-400', argmax_mkt:'text-indigo-400', edge_pure:'text-pink-400', edge_shrunk:'text-rose-400', edge_mkt:'text-red-300' };
 
@@ -623,6 +631,8 @@ function renderModels() {
 
   const consensus0 = f0?.ensembleForecast?.consensus?.consensusValue;
   const consensus1 = f1?.ensembleForecast?.consensus?.consensusValue;
+  // Strongest weight in the set → scales the weight bars relatively.
+  const maxWeight = Math.max(0.0001, ...all.map(l => (t0[l]||t1[l])?.normalizedWeight || 0));
 
   const rows = all.map(label => {
     const m0 = t0[label]; const m1 = t1[label];
@@ -630,13 +640,31 @@ function renderModels() {
     const diff = temp0!=null && temp1!=null ? temp1-temp0 : null;
     const diffSign = diff != null ? (diff>0?'+':'') : '';
     const diffCls = diff == null ? 'text-slate-700' : diff > 0.5 ? 'text-orange-400' : diff < -0.5 ? 'text-blue-400' : 'text-slate-500';
-    const w = (m0||m1)?.normalizedWeight;
+    const mm = m0 || m1;
+    const w = mm?.normalizedWeight;
+    // Per-model accuracy (from ERA5 truth + Polymarket band), surfaced by predict.js
+    const mae = mm?.mae;
+    const hr  = mm?.hitRate;
+    const hrN = mm?.hitSamples ?? 0;
+    const maeCls = mae == null ? 'text-slate-700' : mae < 0.7 ? 'text-emerald-400' : mae < 1.2 ? 'text-yellow-400' : 'text-red-400';
+    const hrCls  = hr == null ? 'text-slate-700' : hr >= 0.5 ? 'text-emerald-400' : hr >= 0.3 ? 'text-yellow-400' : 'text-red-400';
+    // Weight bar (relative, so the strongest model fills the row)
+    const wPct = w != null ? Math.round(w / maxWeight * 100) : 0;
     return `<tr class="trow border-t border-slate-800/50">
-      <td class="py-3 pr-4 text-xs font-semibold text-slate-200 whitespace-nowrap">${label}</td>
-      <td class="py-3 pr-4 text-xs text-center tabular-nums ${temp0!=null?'text-slate-300':'text-slate-700'}">${temp0!=null?temp0.toFixed(1)+'°':'—'}</td>
-      <td class="py-3 pr-4 text-xs text-center tabular-nums ${temp1!=null?'text-slate-300':'text-slate-700'}">${temp1!=null?temp1.toFixed(1)+'°':'—'}</td>
-      <td class="py-3 pr-4 text-xs text-center font-semibold tabular-nums ${diffCls}">${diff!=null?diffSign+diff.toFixed(1)+'°':'—'}</td>
-      <td class="py-3 text-xs text-right text-slate-600">${w!=null?(w*100).toFixed(1)+'%':'equal'}</td>
+      <td class="py-3 pr-3 text-xs font-semibold text-slate-200 whitespace-nowrap">${label}</td>
+      <td class="py-3 pr-3 text-xs text-center tabular-nums ${temp0!=null?'text-slate-300':'text-slate-700'}">${temp0!=null?temp0.toFixed(1)+'°':'—'}</td>
+      <td class="py-3 pr-3 text-xs text-center tabular-nums ${temp1!=null?'text-slate-300':'text-slate-700'}">${temp1!=null?temp1.toFixed(1)+'°':'—'}</td>
+      <td class="py-3 pr-3 text-xs text-center font-semibold tabular-nums ${diffCls}">${diff!=null?diffSign+diff.toFixed(1)+'°':'—'}</td>
+      <td class="py-3 pr-3 text-xs text-center tabular-nums ${maeCls}">${mae!=null?mae.toFixed(2)+'°':'—'}</td>
+      <td class="py-3 pr-3 text-xs text-center tabular-nums ${hrCls}" title="${hrN} settled days">${hr!=null?(hr*100).toFixed(0)+'%':'—'}</td>
+      <td class="py-3 text-right">
+        <div class="flex items-center justify-end gap-2">
+          <div class="w-12 h-1 rounded-full bg-slate-800 overflow-hidden hidden sm:block">
+            <div class="h-full rounded-full bar-fill" style="width:${wPct}%;background:#60a5fa"></div>
+          </div>
+          <span class="text-xs tabular-nums ${w!=null?'text-slate-400':'text-slate-700'}">${w!=null?(w*100).toFixed(1)+'%':'equal'}</span>
+        </div>
+      </td>
     </tr>`;
   }).join('');
 
@@ -654,20 +682,29 @@ function renderModels() {
       </div>
     </div>
     <div class="card p-5">
-      <div class="text-xs text-slate-500 uppercase tracking-widest font-semibold mb-4">12 Models</div>
+      <div class="flex items-center justify-between mb-4">
+        <span class="text-xs text-slate-500 uppercase tracking-widest font-semibold">12 Models</span>
+        <span class="text-xs text-slate-600">sorted by today's temp</span>
+      </div>
       <div class="table-wrap">
-        <table class="w-full min-w-[380px]">
+        <table class="w-full min-w-[520px]">
           <thead><tr>
-            <th class="text-left text-xs text-slate-600 font-normal pb-2 pr-4">Model</th>
-            <th class="text-center text-xs text-slate-600 font-normal pb-2 pr-4">Today</th>
-            <th class="text-center text-xs text-slate-600 font-normal pb-2 pr-4">Tomorrow</th>
-            <th class="text-center text-xs text-slate-600 font-normal pb-2 pr-4">Δ</th>
+            <th class="text-left text-xs text-slate-600 font-normal pb-2 pr-3">Model</th>
+            <th class="text-center text-xs text-slate-600 font-normal pb-2 pr-3">Today</th>
+            <th class="text-center text-xs text-slate-600 font-normal pb-2 pr-3">Tom.</th>
+            <th class="text-center text-xs text-slate-600 font-normal pb-2 pr-3">Δ</th>
+            <th class="text-center text-xs text-slate-600 font-normal pb-2 pr-3" title="Mean abs error vs ERA5 — lower is better">MAE</th>
+            <th class="text-center text-xs text-slate-600 font-normal pb-2 pr-3" title="How often the model's band matched the Polymarket result">Hit</th>
             <th class="text-right text-xs text-slate-600 font-normal pb-2">Weight</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
-      <div class="mt-4 text-xs text-slate-700">Weights calibrate after ~2 weeks of data. Equal until then.</div>
+      <div class="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-700">
+        <span><span class="text-slate-500">MAE</span> = точность °C vs ERA5 (→ вес)</span>
+        <span><span class="text-slate-500">Hit</span> = % попадания в корзину Polymarket</span>
+        <span class="text-slate-700">Веса калибруются ~2 недели; до того равные.</span>
+      </div>
     </div>`;
 }
 </script>
