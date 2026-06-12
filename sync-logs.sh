@@ -14,5 +14,7 @@ scp "${SERVER_USER}@${SERVER_HOST}:${SERVER_PATH}/bank.json"                 "$L
 scp "${SERVER_USER}@${SERVER_HOST}:${SERVER_PATH}/paper-bets.ndjson"         "$LOCAL_PATH/" && echo "  ✓ paper-bets.ndjson"
 scp "${SERVER_USER}@${SERVER_HOST}:${SERVER_PATH}/predictions-hourly.ndjson" "$LOCAL_PATH/" && echo "  ✓ predictions-hourly.ndjson"
 scp "${SERVER_USER}@${SERVER_HOST}:${SERVER_PATH}/observed-london.ndjson"    "$LOCAL_PATH/" && echo "  ✓ observed-london.ndjson"
+scp "${SERVER_USER}@${SERVER_HOST}:${SERVER_PATH}/copy-state.json"           "$LOCAL_PATH/" && echo "  ✓ copy-state.json"
+scp "${SERVER_USER}@${SERVER_HOST}:${SERVER_PATH}/copy-trades.ndjson"        "$LOCAL_PATH/" && echo "  ✓ copy-trades.ndjson"
 
 echo "[sync] Done → $LOCAL_PATH"

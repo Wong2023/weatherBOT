@@ -22,7 +22,12 @@ const SCRIPTS = {
   dailyRun:      path.resolve(__dirname, 'run.js'),
   timingReport:  path.resolve(__dirname, 'analyze_timing.js'),
   paperBet:      path.resolve(__dirname, 'paper_bet.js'),
+  trackWallet:   path.resolve(__dirname, 'track_wallet.js'),
 };
+
+// Copy-trader: paper-copy the weather wallet every 30 min. Backfills all trades
+// since the last cursor, so cadence only affects freshness, not accuracy.
+const COPY_ARGS = ['--copy', '--scale=0.25', '--bank=100', '--slippage=0.02'];
 
 function log(msg) {
   console.log(`[scheduler] ${new Date().toISOString()}  ${msg}`);
@@ -51,6 +56,7 @@ let lastHourlyHour   = -1;  // UTC hour when last hourly run fired
 let lastDailyDate    = '';  // YYYY-MM-DD of last daily run
 let lastWeeklyDate   = '';  // YYYY-MM-DD of last weekly report (Sunday)
 let lastBetDate      = '';  // YYYY-MM-DD of last paper-bet signal
+let lastCopySlot     = -1;  // 30-min slot index when copy-trader last fired
 
 function utcDateStr(d) {
   return d.toISOString().slice(0, 10);
@@ -93,6 +99,14 @@ function tick() {
   if (dow === 0 && hour === 10 && min >= 0 && lastWeeklyDate !== today) {
     lastWeeklyDate = today;
     run('Weekly timing analysis', SCRIPTS.timingReport, ['--days=7']);
+  }
+
+  // 5. Copy-trader — every 30 min (slots 0 and 1 of each hour). Paper-copies the
+  //    weather wallet; backfills since last cursor so nothing is missed.
+  const copySlot = hour * 2 + (min >= 30 ? 1 : 0);
+  if (copySlot !== lastCopySlot) {
+    lastCopySlot = copySlot;
+    run('Copy-trader paper sync', SCRIPTS.trackWallet, COPY_ARGS);
   }
 }
 
