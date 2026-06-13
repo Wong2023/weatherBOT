@@ -62,8 +62,10 @@ function parseArgs() {
     mode:     a.stats ? 'stats' : a.backtest ? 'backtest' : a.copy ? 'copy' : 'stats',
     wallet:   (a.wallet || process.env.COPY_WALLET || WEATHERK1LLER).toLowerCase(),
     slippage: a.slippage != null ? Number(a.slippage) : 0.02,
+    spread:   a.spread != null ? Number(a.spread) : 0.01,
     scale:    a.scale != null ? Number(a.scale) : 0.25,
     bank:     a.bank != null ? Number(a.bank) : 100,
+    loop:     a.loop != null ? Number(a.loop) : 0,
     json:     !!a.json,
   };
 }
@@ -83,6 +85,36 @@ async function fetchAllActivity(wallet, sinceTs = 0) {
     if (page.length < 500) break;
   }
   return sinceTs ? all.filter(e => e.timestamp > sinceTs) : all;
+}
+
+// Lightweight incremental fetch for the daemon: newest page only, filtered to
+// events after the cursor. If the page is full AND every row is new, there may
+// be more than one page of backlog → fall back to the full paginated fetch.
+async function fetchRecentActivity(wallet, sinceTs) {
+  const r = await fetch(`${DATA_API}/activity?user=${wallet}&limit=300&sortBy=TIMESTAMP&sortDirection=DESC`);
+  if (!r.ok) throw new Error(`activity ${r.status}`);
+  const page = await r.json();
+  if (!Array.isArray(page)) return [];
+  const fresh = page.filter(e => e.timestamp > sinceTs);
+  if (page.length === 300 && fresh.length === 300) return fetchAllActivity(wallet, sinceTs);
+  return fresh.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+// Real executable price at OUR (delayed) execution moment. The live order book
+// (/price) is unreliable on thin weather markets — it returns crossed bid/ask —
+// so we use the last traded price from prices-history (1-min), which is clean.
+// Returns null if unavailable → caller falls back to the copied trade's price.
+const CLOB = 'https://clob.polymarket.com';
+async function livePrice(tokenId) {
+  try {
+    const end = Math.floor(Date.now() / 1000);
+    const r = await fetch(`${CLOB}/prices-history?market=${tokenId}&startTs=${end - 600}&endTs=${end}&fidelity=1`);
+    if (!r.ok) return null;
+    const h = (await r.json()).history;
+    if (!Array.isArray(h) || !h.length) return null;
+    const p = h[h.length - 1].p;
+    return (p > 0.0005 && p < 0.9995) ? p : null;
+  } catch { return null; }
 }
 
 async function fetchProfit(wallet) {
@@ -236,7 +268,7 @@ async function appendCopy(entry) {
   await fs.appendFile(COPY_LOG, JSON.stringify(entry) + '\n', 'utf8');
 }
 
-async function runCopy({ wallet, slippage, scale, bank }) {
+async function runCopy({ wallet, slippage, spread, scale, bank }) {
   const state = await loadState(bank);
   if (state.wallet && state.wallet !== wallet) {
     console.log(`State belongs to ${state.wallet}, not ${wallet}. Refusing to mix wallets.`);
@@ -256,35 +288,48 @@ async function runCopy({ wallet, slippage, scale, bank }) {
     return;
   }
 
-  const fresh = (await fetchAllActivity(wallet, state.cursorTs))
+  const fresh = (await fetchRecentActivity(wallet, state.cursorTs))
     .filter(e => ['TRADE', 'REDEEM'].includes(e.type) && !seen.has(e.transactionHash));
-  if (!fresh.length) { console.log(`copy: no new events since ${state.cursorTs ? iso(state.cursorTs) : 'start'}.`); await saveState(state); return; }
+  if (!fresh.length) { await saveState(state); return; }
+
+  // For a fresh trade (< LIVE_WINDOW old) book OUR fill at the REAL price now
+  // (prices-history at our execution moment) + a half-spread to cross the book —
+  // this captures the true lag cost. For older backfilled trades the live price
+  // would be stale, so fall back to the trade's own price ± slippage.
+  const LIVE_WINDOW = 600;
+  const nowSec = Math.floor(Date.now() / 1000);
+  async function ourPrice(e, dir) {
+    const recent = (nowSec - e.timestamp) <= LIVE_WINDOW;
+    const live = recent ? await livePrice(e.asset) : null;
+    if (live != null) return { px: dir === 'buy' ? live * (1 + spread) : live * (1 - spread), src: 'live' };
+    return { px: dir === 'buy' ? e.price * (1 + slippage) : e.price * (1 - slippage), src: 'his' };
+  }
 
   const actions = [];
   for (const e of fresh) {
     const key = e.asset; // unique per (market, outcome)
     if (e.type === 'TRADE' && e.side === 'BUY') {
-      const px   = e.price * (1 + slippage);
-      const cost = e.usdcSize * scale * (1 + slippage);
-      if (cost > state.bank) { actions.push({ act: 'skip_buy', reason: 'insufficient_bank', slug: e.slug, want: +cost.toFixed(2), bank: +state.bank.toFixed(2) }); continue; }
+      const { px, src } = await ourPrice(e, 'buy');
       const shares = e.size * scale;
+      const cost   = shares * px;
+      if (cost > state.bank) { actions.push({ act: 'skip_buy', reason: 'insufficient_bank', slug: e.slug, want: +cost.toFixed(2), bank: +state.bank.toFixed(2) }); continue; }
       state.bank -= cost;
       const p = state.positions[key] || { shares: 0, cost: 0, slug: e.slug, title: e.title, outcome: e.outcome };
       p.shares += shares; p.cost += cost;
       state.positions[key] = p;
-      actions.push({ act: 'buy', slug: e.slug, outcome: e.outcome, shares: +shares.toFixed(2), price: +px.toFixed(4), cost: +cost.toFixed(2) });
+      actions.push({ act: 'buy', slug: e.slug, outcome: e.outcome, shares: +shares.toFixed(2), price: +px.toFixed(4), hisPrice: +e.price.toFixed(4), priceSrc: src, cost: +cost.toFixed(2) });
     } else if (e.type === 'TRADE' && e.side === 'SELL') {
       const p = state.positions[key];
       if (!p || p.shares <= 0) { actions.push({ act: 'skip_sell', reason: 'no_position', slug: e.slug }); continue; }
       const sellShares = Math.min(e.size * scale, p.shares);
-      const px = e.price * (1 - slippage);
+      const { px, src } = await ourPrice(e, 'sell');
       const proceeds = sellShares * px;
       const costPart = p.cost * (sellShares / p.shares);
       const pnl = proceeds - costPart;
       state.bank += proceeds; state.realized += pnl;
       p.shares -= sellShares; p.cost -= costPart;
       if (p.shares <= 0.01) delete state.positions[key];
-      actions.push({ act: 'sell', slug: e.slug, shares: +sellShares.toFixed(2), price: +px.toFixed(4), pnl: +pnl.toFixed(2) });
+      actions.push({ act: 'sell', slug: e.slug, shares: +sellShares.toFixed(2), price: +px.toFixed(4), hisPrice: +e.price.toFixed(4), priceSrc: src, pnl: +pnl.toFixed(2) });
     } else if (e.type === 'REDEEM') {
       const p = state.positions[key];
       if (!p || p.shares <= 0) continue;
@@ -323,7 +368,24 @@ async function main() {
   const opts = parseArgs();
   if (opts.mode === 'stats')    return runStats(opts);
   if (opts.mode === 'backtest') return runBacktest(opts);
-  if (opts.mode === 'copy')     return runCopy(opts);
+  if (opts.mode !== 'copy')     return;
+
+  // One-shot copy (cron / manual).
+  if (!opts.loop) return runCopy(opts);
+
+  // Daemon: run the copy sync every `loop` seconds. setInterval keeps the
+  // process alive under pm2. A `running` guard prevents overlap if one tick
+  // runs long (each tick is normally well under a second).
+  console.log(`copy daemon: every ${opts.loop}s · scale ${opts.scale} · spread ${(opts.spread*100).toFixed(1)}% · wallet ${opts.wallet}`);
+  let running = false;
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try { await runCopy(opts); } catch (e) { console.error(`copy tick failed: ${e.message}`); }
+    running = false;
+  };
+  await tick();
+  setInterval(tick, opts.loop * 1000);
 }
 
 main().catch(err => { console.error('track_wallet failed:', err.message); process.exit(1); });

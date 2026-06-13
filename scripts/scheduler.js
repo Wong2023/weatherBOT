@@ -22,12 +22,10 @@ const SCRIPTS = {
   dailyRun:      path.resolve(__dirname, 'run.js'),
   timingReport:  path.resolve(__dirname, 'analyze_timing.js'),
   paperBet:      path.resolve(__dirname, 'paper_bet.js'),
-  trackWallet:   path.resolve(__dirname, 'track_wallet.js'),
 };
-
-// Copy-trader: paper-copy the weather wallet every 30 min. Backfills all trades
-// since the last cursor, so cadence only affects freshness, not accuracy.
-const COPY_ARGS = ['--copy', '--scale=0.25', '--bank=100', '--slippage=0.02'];
+// NOTE: the copy-trader now runs as its OWN pm2 process (a 30-second daemon),
+// not from this scheduler — see scripts/track_wallet.js --copy --loop=30.
+// Keeping it here too would double-copy into copy-state.json.
 
 function log(msg) {
   console.log(`[scheduler] ${new Date().toISOString()}  ${msg}`);
@@ -56,7 +54,6 @@ let lastHourlyHour   = -1;  // UTC hour when last hourly run fired
 let lastDailyDate    = '';  // YYYY-MM-DD of last daily run
 let lastWeeklyDate   = '';  // YYYY-MM-DD of last weekly report (Sunday)
 let lastBetDate      = '';  // YYYY-MM-DD of last paper-bet signal
-let lastCopySlot     = -1;  // 30-min slot index when copy-trader last fired
 
 function utcDateStr(d) {
   return d.toISOString().slice(0, 10);
@@ -99,16 +96,6 @@ function tick() {
   if (dow === 0 && hour === 10 && min >= 0 && lastWeeklyDate !== today) {
     lastWeeklyDate = today;
     run('Weekly timing analysis', SCRIPTS.timingReport, ['--days=7']);
-  }
-
-  // 5. Copy-trader — every 3 min. Target wallet is a scalper (median hold ~38 min,
-  //    42% of exits under 30 min), so a 30-min cadence would miss ~40% of his exits.
-  //    At 3 min we keep up with ~92% of his trades; only <3-min scalps (~3%) slip.
-  //    Backfills since last cursor, so nothing is lost if a tick is skipped.
-  const copySlot = hour * 20 + Math.floor(min / 3);
-  if (copySlot !== lastCopySlot) {
-    lastCopySlot = copySlot;
-    run('Copy-trader paper sync', SCRIPTS.trackWallet, COPY_ARGS);
   }
 }
 
