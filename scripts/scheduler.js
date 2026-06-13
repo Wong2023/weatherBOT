@@ -101,9 +101,11 @@ function tick() {
     run('Weekly timing analysis', SCRIPTS.timingReport, ['--days=7']);
   }
 
-  // 5. Copy-trader — every 30 min (slots 0 and 1 of each hour). Paper-copies the
-  //    weather wallet; backfills since last cursor so nothing is missed.
-  const copySlot = hour * 2 + (min >= 30 ? 1 : 0);
+  // 5. Copy-trader — every 3 min. Target wallet is a scalper (median hold ~38 min,
+  //    42% of exits under 30 min), so a 30-min cadence would miss ~40% of his exits.
+  //    At 3 min we keep up with ~92% of his trades; only <3-min scalps (~3%) slip.
+  //    Backfills since last cursor, so nothing is lost if a tick is skipped.
+  const copySlot = hour * 20 + Math.floor(min / 3);
   if (copySlot !== lastCopySlot) {
     lastCopySlot = copySlot;
     run('Copy-trader paper sync', SCRIPTS.trackWallet, COPY_ARGS);
